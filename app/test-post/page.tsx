@@ -1,34 +1,28 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useEffect, useState } from 'react'
 
-export default function Home() {
+export default function TestPostPage() {
+  const supabase = createClient()
   const [userId, setUserId] = useState<string | null>(null)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState<string>('')
 
   useEffect(() => {
-    const supabase = createClient()
-
-    const loadUser = async () => {
+    const load = async () => {
       const { data, error } = await supabase.auth.getUser()
-
       if (error) {
-        setMessage('Auth error: ' + error.message)
+        setMessage(`Auth error: ${error.message}`)
         return
       }
-
       setUserId(data.user?.id ?? null)
     }
-
-    loadUser()
-  }, [])
+    load()
+  }, [supabase])
 
   const createPost = async () => {
-    const supabase = createClient()
-
     if (!userId) {
-      setMessage('You are not logged in')
+      setMessage('No user. Please login first.')
       return
     }
 
@@ -37,24 +31,19 @@ export default function Home() {
       content: 'My first post 🚀',
     })
 
-    if (error) {
-      setMessage('Error: ' + error.message)
-    } else {
-      setMessage('Post created successfully ✅')
-    }
+    setMessage(error ? `Insert error: ${error.message}` : 'Post created ✅')
   }
 
   return (
-    <main style={{ padding: 20 }}>
-      <h1>Timer MVP</h1>
-
+    <main style={{ padding: 24 }}>
+      <h1>Test Post</h1>
       <p>User: {userId ?? 'not logged in'}</p>
 
-      <button onClick={createPost}>
+      <button onClick={createPost} style={{ padding: '10px 14px' }}>
         Create Post
       </button>
 
-      <p>{message}</p>
+      {message && <p style={{ marginTop: 12 }}>{message}</p>}
     </main>
   )
 }
