@@ -16,22 +16,12 @@ export default function TestPostPage() {
   const [userId, setUserId] = useState<string>('')
   const [content, setContent] = useState('Hello from test-post')
   const [posts, setPosts] = useState<PostRow[]>([])
-  const [status, setStatus] = useState<string>('')
+  const [status, setStatus] = useState<string>('Loading...')
   const [loading, setLoading] = useState(false)
 
-  async function loadUserAndPosts() {
-    setStatus('Loading...')
-    const { data: authData, error: authErr } = await supabase.auth.getUser()
-    if (authErr) {
-      setStatus(`Auth error: ${authErr.message}`)
-      return
-    }
-    const id = authData?.user?.id
-    if (!id) {
-      setStatus('Auth session missing')
-      return
-    }
-    setUserId(id)
+  const fetchPosts = async () => {
+    setLoading(true)
+    setStatus('Fetching posts...')
 
     const { data, error } = await supabase
       .from('posts')
@@ -41,16 +31,42 @@ export default function TestPostPage() {
 
     if (error) {
       setStatus(`Fetch error: ${error.message}`)
+      setPosts([])
+      setLoading(false)
       return
     }
 
     setPosts((data ?? []) as PostRow[])
     setStatus('OK')
+    setLoading(false)
   }
 
-  async function createPost() {
+  const init = async () => {
+    setStatus('Getting user...')
+    const { data, error } = await supabase.auth.getUser()
+
+    if (error) {
+      setStatus(`Auth error: ${error.message}`)
+      return
+    }
+
+    const uid = data.user?.id
+    if (!uid) {
+      setStatus('No user (not logged in)')
+      return
+    }
+
+    setUserId(uid)
+    await fetchPosts()
+  }
+
+  const createPost = async () => {
     if (!userId) {
-      setStatus('No userId (session missing)')
+      setStatus('No user (login first)')
+      return
+    }
+    if (!content.trim()) {
+      setStatus('Content is empty')
       return
     }
 
@@ -58,8 +74,8 @@ export default function TestPostPage() {
     setStatus('Creating...')
 
     const { error } = await supabase.from('posts').insert({
-      user_id: userId,     // важно: у тебя колонка называется user_id (не author_id)
-      content: content,
+      user_id: userId,
+      content: content.trim(),
     })
 
     if (error) {
@@ -69,56 +85,98 @@ export default function TestPostPage() {
     }
 
     setStatus('Post created ✅')
-    await loadUserAndPosts() // <-- вот тот самый fetch после Create
+    await fetchPosts() // ← ВОТ ТВОЙ FETCH ПОСЛЕ CREATE
     setLoading(false)
   }
 
   useEffect(() => {
-    loadUserAndPosts()
+    void init()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
-    <div style={{ padding: 24, maxWidth: 720 }}>
-      <h1>Test Post</h1>
+    <div style={{ maxWidth: 720, margin: '24px auto', padding: 16 }}>
+      <h1 style={{ fontSize: 28, fontWeight: 700 }}>Test Post</h1>
 
       <div style={{ marginTop: 12 }}>
-        <div><b>User:</b> {userId || '(none)'}</div>
-        <div><b>Status:</b> {status}</div>
+        <div style={{ fontWeight: 600 }}>User: {userId || '-'}</div>
+        <div style={{ marginTop: 6 }}>Status: {status}</div>
       </div>
 
-      <div style={{ marginTop: 16 }}>
-        <h3>Create Post</h3>
+      <hr style={{ margin: '16px 0' }} />
+
+      <h2 style={{ fontSize: 20, fontWeight: 700 }}>Create Post</h2>
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
         <input
           value={content}
           onChange={(e) => setContent(e.target.value)}
-          style={{ width: '100%', padding: 10, marginBottom: 10 }}
+          placeholder="Write something..."
+          style={{
+            flex: 1,
+            padding: 10,
+            border: '1px solid #333',
+            borderRadius: 10,
+            background: 'transparent',
+          }}
         />
-        <button onClick={createPost} disabled={loading} style={{ marginRight: 10 }}>
-          {loading ? 'Creating...' : 'Create'}
+
+        <button
+          onClick={createPost}
+          disabled={loading}
+          style={{
+            padding: '10px 14px',
+            border: '1px solid #333',
+            borderRadius: 10,
+            cursor: loading ? 'not-allowed' : 'pointer',
+          }}
+        >
+          Create
         </button>
-        <button onClick={loadUserAndPosts} disabled={loading}>
+
+        <button
+          onClick={fetchPosts}
+          disabled={loading}
+          style={{
+            padding: '10px 14px',
+            border: '1px solid #333',
+            borderRadius: 10,
+            cursor: loading ? 'not-allowed' : 'pointer',
+          }}
+        >
           Refresh
         </button>
       </div>
 
-      <div style={{ marginTop: 20 }}>
-        <h3>Latest posts (top 10)</h3>
-        {posts.length === 0 ? (
-          <div>No posts returned.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {posts.map((p) => (
-              <div key={p.id} style={{ border: '1px solid #333', padding: 12, borderRadius: 8 }}>
-                <div><b>{p.id}</b></div>
-                <div>user_id: {p.user_id}</div>
-                <div>{p.content}</div>
-                <div style={{ opacity: 0.8 }}>{new Date(p.created_at).toLocaleString()}</div>
+      <h2 style={{ fontSize: 20, fontWeight: 700, marginTop: 18 }}>
+        Latest posts (top 10)
+      </h2>
+
+      {posts.length === 0 ? (
+        <div style={{ marginTop: 8, opacity: 0.8 }}>No posts returned.</div>
+      ) : (
+        <div style={{ display: 'grid', gap: 10, marginTop: 10 }}>
+          {posts.map((p) => (
+            <div
+              key={p.id}
+              style={{
+                border: '1px solid #333',
+                borderRadius: 12,
+                padding: 12,
+              }}
+            >
+              <div style={{ fontWeight: 700 }}>{p.id}</div>
+              <div style={{ marginTop: 6 }}>
+                <b>user_id:</b> {p.user_id}
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+              <div style={{ marginTop: 6 }}>{p.content}</div>
+              <div style={{ marginTop: 6, opacity: 0.8 }}>
+                {new Date(p.created_at).toLocaleString()}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
