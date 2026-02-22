@@ -2,10 +2,12 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase/client'
+import { createClient } from '@/lib/supabase/client'
 
 export default function LoginPage() {
   const router = useRouter()
+  const supabase = createClient() // ✅ ВОТ ЭТОГО НЕ ХВАТАЛО
+
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -30,6 +32,7 @@ export default function LoginPage() {
     }
 
     router.push('/feed')
+    router.refresh()
   }
 
   return (
@@ -71,7 +74,11 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {error && <p className="text-sm" style={{ color: 'crimson' }}>{error}</p>}
+        {error && (
+          <p className="text-sm" style={{ color: 'crimson' }}>
+            {error}
+          </p>
+        )}
 
         <div className="space-y-2">
           <button
