@@ -12,6 +12,7 @@ import PostComments from './posts/PostComments'
 type RankedPost = {
   id: string
   content: string | null
+  image_url: string | null
   created_at: string
   user_id: string
   username: string | null
@@ -61,6 +62,15 @@ export default function FeedPage() {
     opacity: 0.85,
   }
 
+  const imageStyle: CSSProperties = {
+    width: '100%',
+    maxHeight: 420,
+    objectFit: 'cover',
+    borderRadius: 12,
+    border: '1px solid #444',
+    marginTop: 12,
+  }
+
   const loadCurrentUser = useCallback(async () => {
     const { data: authRes, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw authErr
@@ -90,7 +100,7 @@ export default function FeedPage() {
       const { data, error: feedErr } = await supabase
         .from('feed_ranked')
         .select(
-          'id, content, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
+          'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
         )
         .order('score', { ascending: false })
         .order('created_at', { ascending: false })
@@ -131,7 +141,7 @@ export default function FeedPage() {
       const { data, error: feedErr } = await supabase
         .from('feed_ranked')
         .select(
-          'id, content, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
+          'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
         )
         .order('score', { ascending: false })
         .order('created_at', { ascending: false })
@@ -198,7 +208,6 @@ export default function FeedPage() {
     )
 
     observer.observe(sentinelRef.current)
-
     return () => observer.disconnect()
   }, [hasMore, loading, loadingMore, loadMore])
 
@@ -269,9 +278,19 @@ export default function FeedPage() {
                     <PostLikeButton postId={post.id} currentUserId={currentUserId} />
                   </div>
 
-                  <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
-                    {post.content ?? ''}
-                  </div>
+                  {post.content && (
+                    <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
+                      {post.content}
+                    </div>
+                  )}
+
+                  {post.image_url && (
+                    <img
+                      src={post.image_url}
+                      alt="Post image"
+                      style={imageStyle}
+                    />
+                  )}
 
                   <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                     <span style={pill}>❤️ {likeCount}</span>
