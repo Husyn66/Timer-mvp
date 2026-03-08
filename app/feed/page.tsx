@@ -35,6 +35,7 @@ export default function FeedPage() {
 
   const [posts, setPosts] = useState<FeedPost[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [likedPostIds, setLikedPostIds] = useState<Set<string>>(new Set())
   const [feedMode, setFeedMode] = useState<FeedMode>('for_you')
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -86,6 +87,17 @@ export default function FeedPage() {
     fontWeight: 700,
   })
 
+  const commentToggleStyle: CSSProperties = {
+    marginTop: 10,
+    padding: '6px 10px',
+    borderRadius: 8,
+    border: '1px solid #444',
+    background: 'transparent',
+    color: 'inherit',
+    cursor: 'pointer',
+    fontSize: 13,
+  }
+
   const loadCurrentUser = useCallback(async () => {
     const { data: authRes, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw authErr
@@ -130,6 +142,32 @@ export default function FeedPage() {
     [feedMode, supabase]
   )
 
+  const loadLikedState = useCallback(
+    async (uid: string, visiblePosts: FeedPost[]) => {
+      if (visiblePosts.length === 0) {
+        if (mountedRef.current) setLikedPostIds(new Set())
+        return
+      }
+
+      const postIds = visiblePosts.map((p) => p.id)
+
+      const { data, error } = await supabase
+        .from('post_likes')
+        .select('post_id')
+        .eq('user_id', uid)
+        .in('post_id', postIds)
+
+      if (error) throw new Error(`Failed to load like state: ${error.message}`)
+
+      const likedIds = new Set<string>((data ?? []).map((row: any) => row.post_id))
+
+      if (mountedRef.current) {
+        setLikedPostIds(likedIds)
+      }
+    },
+    [supabase]
+  )
+
   const loadInitial = useCallback(async () => {
     if (isFetchingRef.current) return
     isFetchingRef.current = true
@@ -148,6 +186,7 @@ export default function FeedPage() {
 
       setPosts(batch)
       setHasMore(batch.length === PAGE_SIZE)
+      await loadLikedState(uid, batch)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Unknown error'
       if (mountedRef.current) setError(msg)
@@ -155,7 +194,7 @@ export default function FeedPage() {
       if (mountedRef.current) setLoading(false)
       isFetchingRef.current = false
     }
-  }, [fetchFeedBatch, loadCurrentUser])
+  }, [fetchFeedBatch, loadCurrentUser, loadLikedState])
 
   const loadMore = useCallback(async () => {
     if (isFetchingRef.current) return
@@ -178,6 +217,8 @@ export default function FeedPage() {
         return
       }
 
+      let mergedPosts: FeedPost[] = []
+
       setPosts((prev) => {
         const seen = new Set(prev.map((p) => p.id))
         const merged = [...prev]
@@ -186,8 +227,13 @@ export default function FeedPage() {
           if (!seen.has(item.id)) merged.push(item)
         }
 
+        mergedPosts = merged
         return merged
       })
+
+      if (currentUserId && mergedPosts.length > 0) {
+        await loadLikedState(currentUserId, mergedPosts)
+      }
 
       if (batch.length < PAGE_SIZE) {
         setHasMore(false)
@@ -199,14 +245,52 @@ export default function FeedPage() {
       if (mountedRef.current) setLoadingMore(false)
       isFetchingRef.current = false
     }
-  }, [fetchFeedBatch, hasMore, posts.length])
+  }, [currentUserId, fetchFeedBatch, hasMore, loadLikedState, posts.length])
 
   const handleReload = useCallback(async () => {
     setPosts([])
+    setLikedPostIds(new Set())
     setHasMore(true)
     setError('')
     await loadInitial()
   }, [loadInitial])
+
+  const applyLikeDelta = useCallback((postId: string, nextLiked: boolean) => {
+    setPosts((prev) =>
+      prev.map((post) => {
+        if (post.id !== postId) return post
+
+        const current = post.like_count ?? 0
+        const nextCount = nextLiked ? current + 1 : Math.max(current - 1, 0)
+
+        return {
+          ...post,
+          like_count: nextCount,
+        }
+      })
+    )
+
+    setLikedPostIds((prev) => {
+      const next = new Set(prev)
+      if (nextLiked) next.add(postId)
+      else next.delete(postId)
+      return next
+    })
+  }, [])
+
+  const applyCommentDelta = useCallback((postId: string, delta: number) => {
+    setPosts((prev) =>
+      prev.map((post) => {
+        if (post.id !== postId) return post
+
+        const current = post.comment_count ?? 0
+        return {
+          ...post,
+          comment_count: Math.max(current + delta, 0),
+        }
+      })
+    )
+  }, [])
 
   useEffect(() => {
     mountedRef.current = true
@@ -234,6 +318,7 @@ export default function FeedPage() {
     if (!modeReady) return
 
     setPosts([])
+    setLikedPostIds(new Set())
     setHasMore(true)
     setError('')
     void loadInitial()
@@ -290,7 +375,13 @@ export default function FeedPage() {
             </div>
           </div>
 
-          <PostLikeButton postId={post.id} currentUserId={currentUserId} />
+          <PostLikeButton
+            postId={post.id}
+            currentUserId={currentUserId}
+            initialLiked={likedPostIds.has(post.id)}
+            initialCount={likeCount}
+            onToggle={applyLikeDelta}
+          />
         </div>
 
         {post.content && (
@@ -299,9 +390,7 @@ export default function FeedPage() {
           </div>
         )}
 
-        {post.image_url && (
-          <img src={post.image_url} alt="Post image" style={imageStyle} />
-        )}
+        {post.image_url && <img src={post.image_url} alt="Post image" style={imageStyle} />}
 
         <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <span style={pill}>❤️ {likeCount}</span>
@@ -312,9 +401,13 @@ export default function FeedPage() {
           {feedMode === 'for_you' && <span style={pill}>⭐ {score.toFixed(2)}</span>}
         </div>
 
-        <div style={{ marginTop: 10 }}>
-          <PostComments postId={post.id} currentUserId={currentUserId} />
-        </div>
+        <PostComments
+          postId={post.id}
+          currentUserId={currentUserId}
+          initialCount={commentCount}
+          onCommentAdded={() => applyCommentDelta(post.id, 1)}
+          toggleStyle={commentToggleStyle}
+        />
       </article>
     )
   }
@@ -380,9 +473,7 @@ export default function FeedPage() {
                 {renderPostBody(post, idx)}
               </PostWatchTracker>
             ) : (
-              <div key={post.id}>
-                {renderPostBody(post, idx)}
-              </div>
+              <div key={post.id}>{renderPostBody(post, idx)}</div>
             )
           )}
 

@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import type { CSSProperties } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 type CommentRow = {
@@ -13,20 +14,26 @@ type CommentRow = {
 export default function PostComments({
   postId,
   currentUserId,
+  initialCount,
   onCommentAdded,
+  toggleStyle,
 }: {
   postId: string
   currentUserId: string | null
+  initialCount: number
   onCommentAdded?: () => void
+  toggleStyle?: CSSProperties
 }) {
   const supabase = useMemo(() => createClient(), [])
 
   const [items, setItems] = useState<CommentRow[]>([])
   const [usernames, setUsernames] = useState<Record<string, string>>({})
   const [text, setText] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
+  const [open, setOpen] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   async function load() {
     setError('')
@@ -66,12 +73,25 @@ export default function PostComments({
       }
     }
 
+    setLoaded(true)
     setLoading(false)
   }
 
   useEffect(() => {
-    void load()
+    setItems([])
+    setUsernames({})
+    setText('')
+    setLoading(false)
+    setSending(false)
+    setError('')
+    setOpen(false)
+    setLoaded(false)
   }, [postId])
+
+  useEffect(() => {
+    if (!open || loaded) return
+    void load()
+  }, [open, loaded])
 
   async function send() {
     const trimmed = text.trim()
@@ -110,49 +130,66 @@ export default function PostComments({
     }))
     setText('')
     setSending(false)
+    setOpen(true)
+    setLoaded(true)
     onCommentAdded?.()
   }
 
+  const buttonLabel = open
+    ? 'Hide comments'
+    : `Show comments (${initialCount})`
+
   return (
-    <div className="mt-3 border-t border-white/10 pt-3">
-      <div className="flex gap-2">
-        <input
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder={currentUserId ? 'Write a comment…' : 'Login to comment…'}
-          className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none"
-          maxLength={500}
-          disabled={sending || !currentUserId}
-        />
-        <button
-          onClick={() => void send()}
-          disabled={sending || !currentUserId || text.trim().length === 0}
-          className="rounded-md px-3 py-2 text-sm bg-white/10 hover:bg-white/15 disabled:opacity-50"
-        >
-          Send
-        </button>
-      </div>
+    <div style={{ marginTop: 10 }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={toggleStyle}
+      >
+        {buttonLabel}
+      </button>
 
-      {error ? <div className="mt-2 text-sm text-red-400">{error}</div> : null}
-
-      <div className="mt-3">
-        {loading ? (
-          <div className="text-sm opacity-70">Loading comments…</div>
-        ) : items.length === 0 ? (
-          <div className="text-sm opacity-70">No comments yet.</div>
-        ) : (
-          <div className="space-y-2">
-            {items.map((c) => (
-              <div key={c.id} className="rounded-md bg-white/5 px-3 py-2">
-                <div className="text-xs opacity-70">
-                  {(usernames[c.user_id] ?? 'user')} • {new Date(c.created_at).toLocaleString()}
-                </div>
-                <div className="text-sm mt-1 whitespace-pre-wrap">{c.content}</div>
-              </div>
-            ))}
+      {!open ? null : (
+        <div className="mt-3 border-t border-white/10 pt-3">
+          <div className="flex gap-2">
+            <input
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={currentUserId ? 'Write a comment…' : 'Login to comment…'}
+              className="w-full rounded-md bg-white/5 px-3 py-2 text-sm outline-none"
+              maxLength={500}
+              disabled={sending || !currentUserId}
+            />
+            <button
+              onClick={() => void send()}
+              disabled={sending || !currentUserId || text.trim().length === 0}
+              className="rounded-md px-3 py-2 text-sm bg-white/10 hover:bg-white/15 disabled:opacity-50"
+            >
+              Send
+            </button>
           </div>
-        )}
-      </div>
+
+          {error ? <div className="mt-2 text-sm text-red-400">{error}</div> : null}
+
+          <div className="mt-3">
+            {loading ? (
+              <div className="text-sm opacity-70">Loading comments…</div>
+            ) : items.length === 0 ? (
+              <div className="text-sm opacity-70">No comments yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {items.map((c) => (
+                  <div key={c.id} className="rounded-md bg-white/5 px-3 py-2">
+                    <div className="text-xs opacity-70">
+                      {(usernames[c.user_id] ?? 'user')} • {new Date(c.created_at).toLocaleString()}
+                    </div>
+                    <div className="text-sm mt-1 whitespace-pre-wrap">{c.content}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
