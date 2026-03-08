@@ -1,104 +1,116 @@
-'use client';
+'use client'
 
-import { useEffect, useMemo, useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { useEffect, useMemo, useState } from 'react'
+import { createClient } from '@/lib/supabase/client'
 
 type CommentRow = {
-  id: string;
-  content: string;
-  created_at: string;
-  user_id: string;
-};
+  id: string
+  content: string
+  created_at: string
+  user_id: string
+}
 
 export default function PostComments({
   postId,
   currentUserId,
+  onCommentAdded,
 }: {
-  postId: string;
-  currentUserId: string | null;
+  postId: string
+  currentUserId: string | null
+  onCommentAdded?: () => void
 }) {
-  const supabase = useMemo(() => createClient(), []);
+  const supabase = useMemo(() => createClient(), [])
 
-  const [items, setItems] = useState<CommentRow[]>([]);
-  const [usernames, setUsernames] = useState<Record<string, string>>({});
-  const [text, setText] = useState('');
-  const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string>('');
+  const [items, setItems] = useState<CommentRow[]>([])
+  const [usernames, setUsernames] = useState<Record<string, string>>({})
+  const [text, setText] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
 
   async function load() {
-    setError('');
-    setLoading(true);
+    setError('')
+    setLoading(true)
 
     const { data, error } = await supabase
       .from('post_comments')
       .select('id, content, created_at, user_id')
       .eq('post_id', postId)
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(50)
 
     if (error) {
-      setError(error.message);
-      setItems([]);
-      setLoading(false);
-      return;
+      setError(error.message)
+      setItems([])
+      setLoading(false)
+      return
     }
 
-    const rows = (data ?? []) as unknown as CommentRow[];
-    setItems(rows);
+    const rows = (data ?? []) as CommentRow[]
+    setItems(rows)
 
-    const uniqueUserIds = Array.from(new Set(rows.map((r) => r.user_id)));
+    const uniqueUserIds = Array.from(new Set(rows.map((r) => r.user_id)))
 
     if (uniqueUserIds.length > 0) {
       const { data: profs, error: profErr } = await supabase
         .from('profiles')
         .select('id, username')
-        .in('id', uniqueUserIds);
+        .in('id', uniqueUserIds)
 
       if (!profErr && profs) {
-        const map: Record<string, string> = {};
+        const map: Record<string, string> = {}
         for (const p of profs as any[]) {
-          map[p.id] = p.username ?? 'user';
+          map[p.id] = p.username ?? 'user'
         }
-        setUsernames(map);
+        setUsernames(map)
       }
     }
 
-    setLoading(false);
+    setLoading(false)
   }
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [postId]);
+    void load()
+  }, [postId])
 
   async function send() {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+    const trimmed = text.trim()
+    if (!trimmed) return
 
     if (!currentUserId) {
-      setError('You must be logged in to comment.');
-      return;
+      setError('You must be logged in to comment.')
+      return
     }
 
-    setSending(true);
-    setError('');
+    setSending(true)
+    setError('')
 
-    const { error } = await supabase.from('post_comments').insert({
-      post_id: postId,
-      user_id: currentUserId,
-      content: trimmed,
-    } as any); // ✅ FIX: убираем TS 'never'
+    const { data, error } = await supabase
+      .from('post_comments')
+      .insert({
+        post_id: postId,
+        user_id: currentUserId,
+        content: trimmed,
+      })
+      .select('id, content, created_at, user_id')
+      .single()
 
     if (error) {
-      setError(error.message);
-      setSending(false);
-      return;
+      setError(error.message)
+      setSending(false)
+      return
     }
 
-    setText('');
-    setSending(false);
-    await load();
+    const newItem = data as CommentRow
+
+    setItems((prev) => [newItem, ...prev])
+    setUsernames((prev) => ({
+      ...prev,
+      [currentUserId]: prev[currentUserId] ?? 'user',
+    }))
+    setText('')
+    setSending(false)
+    onCommentAdded?.()
   }
 
   return (
@@ -113,7 +125,7 @@ export default function PostComments({
           disabled={sending || !currentUserId}
         />
         <button
-          onClick={send}
+          onClick={() => void send()}
           disabled={sending || !currentUserId || text.trim().length === 0}
           className="rounded-md px-3 py-2 text-sm bg-white/10 hover:bg-white/15 disabled:opacity-50"
         >
@@ -142,5 +154,5 @@ export default function PostComments({
         )}
       </div>
     </div>
-  );
+  )
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
@@ -9,7 +9,7 @@ import PostWatchTracker from './posts/PostWatchTracker'
 import PostLikeButton from './posts/PostLikeButton'
 import PostComments from './posts/PostComments'
 
-type RankedPost = {
+type FeedPost = {
   id: string
   content: string | null
   image_url: string | null
@@ -18,28 +18,33 @@ type RankedPost = {
   username: string | null
   like_count: number | null
   comment_count: number | null
-  watch_seconds_sum: number | null
-  watchers_count: number | null
-  completion_users: number | null
-  score: number | null
+  watch_seconds_sum?: number | null
+  watchers_count?: number | null
+  completion_users?: number | null
+  score?: number | null
 }
+
+type FeedMode = 'for_you' | 'latest'
+
+const PAGE_SIZE = 10
+const FEED_MODE_KEY = 'timer_feed_mode'
 
 export default function FeedPage() {
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
-  const [posts, setPosts] = useState<RankedPost[]>([])
+  const [posts, setPosts] = useState<FeedPost[]>([])
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [feedMode, setFeedMode] = useState<FeedMode>('for_you')
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState('')
+  const [modeReady, setModeReady] = useState(false)
 
   const mountedRef = useRef(true)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const isFetchingRef = useRef(false)
-
-  const PAGE_SIZE = 10
 
   const btnStyle: CSSProperties = {
     padding: '8px 12px',
@@ -71,6 +76,16 @@ export default function FeedPage() {
     marginTop: 12,
   }
 
+  const tabStyle = (active: boolean): CSSProperties => ({
+    padding: '8px 14px',
+    borderRadius: 999,
+    border: active ? '1px solid #111' : '1px solid #555',
+    background: active ? '#111' : '#eee',
+    color: active ? '#fff' : '#111',
+    cursor: 'pointer',
+    fontWeight: 700,
+  })
+
   const loadCurrentUser = useCallback(async () => {
     const { data: authRes, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw authErr
@@ -85,6 +100,36 @@ export default function FeedPage() {
     return uid
   }, [router, supabase])
 
+  const fetchFeedBatch = useCallback(
+    async (from: number, to: number) => {
+      if (feedMode === 'for_you') {
+        const { data, error } = await supabase
+          .from('feed_ranked')
+          .select(
+            'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
+          )
+          .order('score', { ascending: false })
+          .order('created_at', { ascending: false })
+          .range(from, to)
+
+        if (error) throw new Error(`Failed to load For You feed: ${error.message}`)
+        return (data ?? []) as FeedPost[]
+      }
+
+      const { data, error } = await supabase
+        .from('feed_posts')
+        .select(
+          'id, user_id, content, created_at, username, comment_count, image_url, like_count'
+        )
+        .order('created_at', { ascending: false })
+        .range(from, to)
+
+      if (error) throw new Error(`Failed to load Latest feed: ${error.message}`)
+      return (data ?? []) as FeedPost[]
+    },
+    [feedMode, supabase]
+  )
+
   const loadInitial = useCallback(async () => {
     if (isFetchingRef.current) return
     isFetchingRef.current = true
@@ -97,20 +142,7 @@ export default function FeedPage() {
       const uid = await loadCurrentUser()
       if (!uid) return
 
-      const { data, error: feedErr } = await supabase
-        .from('feed_ranked')
-        .select(
-          'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
-        )
-        .order('score', { ascending: false })
-        .order('created_at', { ascending: false })
-        .range(0, PAGE_SIZE - 1)
-
-      if (feedErr) {
-        throw new Error(`Failed to load feed_ranked: ${feedErr.message}`)
-      }
-
-      const batch = (data ?? []) as RankedPost[]
+      const batch = await fetchFeedBatch(0, PAGE_SIZE - 1)
 
       if (!mountedRef.current) return
 
@@ -123,7 +155,7 @@ export default function FeedPage() {
       if (mountedRef.current) setLoading(false)
       isFetchingRef.current = false
     }
-  }, [loadCurrentUser, supabase])
+  }, [fetchFeedBatch, loadCurrentUser])
 
   const loadMore = useCallback(async () => {
     if (isFetchingRef.current) return
@@ -134,24 +166,10 @@ export default function FeedPage() {
     setError('')
 
     try {
-      const alreadyLoaded = posts.length
-      const from = alreadyLoaded
-      const to = alreadyLoaded + PAGE_SIZE - 1
+      const from = posts.length
+      const to = from + PAGE_SIZE - 1
 
-      const { data, error: feedErr } = await supabase
-        .from('feed_ranked')
-        .select(
-          'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
-        )
-        .order('score', { ascending: false })
-        .order('created_at', { ascending: false })
-        .range(from, to)
-
-      if (feedErr) {
-        throw new Error(`Failed to load more feed_ranked: ${feedErr.message}`)
-      }
-
-      const batch = (data ?? []) as RankedPost[]
+      const batch = await fetchFeedBatch(from, to)
 
       if (!mountedRef.current) return
 
@@ -163,9 +181,11 @@ export default function FeedPage() {
       setPosts((prev) => {
         const seen = new Set(prev.map((p) => p.id))
         const merged = [...prev]
+
         for (const item of batch) {
           if (!seen.has(item.id)) merged.push(item)
         }
+
         return merged
       })
 
@@ -179,16 +199,45 @@ export default function FeedPage() {
       if (mountedRef.current) setLoadingMore(false)
       isFetchingRef.current = false
     }
-  }, [hasMore, posts.length, supabase])
+  }, [fetchFeedBatch, hasMore, posts.length])
+
+  const handleReload = useCallback(async () => {
+    setPosts([])
+    setHasMore(true)
+    setError('')
+    await loadInitial()
+  }, [loadInitial])
 
   useEffect(() => {
     mountedRef.current = true
-    void loadInitial()
-
     return () => {
       mountedRef.current = false
     }
-  }, [loadInitial])
+  }, [])
+
+  useEffect(() => {
+    const savedMode = window.localStorage.getItem(FEED_MODE_KEY)
+
+    if (savedMode === 'for_you' || savedMode === 'latest') {
+      setFeedMode(savedMode)
+    }
+
+    setModeReady(true)
+  }, [])
+
+  useEffect(() => {
+    if (!modeReady) return
+    window.localStorage.setItem(FEED_MODE_KEY, feedMode)
+  }, [feedMode, modeReady])
+
+  useEffect(() => {
+    if (!modeReady) return
+
+    setPosts([])
+    setHasMore(true)
+    setError('')
+    void loadInitial()
+  }, [feedMode, modeReady, loadInitial])
 
   useEffect(() => {
     if (!sentinelRef.current) return
@@ -211,6 +260,65 @@ export default function FeedPage() {
     return () => observer.disconnect()
   }, [hasMore, loading, loadingMore, loadMore])
 
+  const renderPostBody = (post: FeedPost, idx: number): ReactNode => {
+    const likeCount = post.like_count ?? 0
+    const commentCount = post.comment_count ?? 0
+    const watchSum = post.watch_seconds_sum ?? 0
+    const watchers = post.watchers_count ?? 0
+    const completions = post.completion_users ?? 0
+    const score = post.score ?? 0
+
+    const authorLabel =
+      feedMode === 'for_you'
+        ? `#${idx + 1} · ${post.username ?? 'unknown'}`
+        : (post.username ?? 'unknown')
+
+    return (
+      <article
+        key={post.id}
+        style={{
+          border: '1px solid #444',
+          borderRadius: 12,
+          padding: 12,
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700 }}>{authorLabel}</div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>
+              {new Date(post.created_at).toLocaleString()}
+            </div>
+          </div>
+
+          <PostLikeButton postId={post.id} currentUserId={currentUserId} />
+        </div>
+
+        {post.content && (
+          <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
+            {post.content}
+          </div>
+        )}
+
+        {post.image_url && (
+          <img src={post.image_url} alt="Post image" style={imageStyle} />
+        )}
+
+        <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <span style={pill}>❤️ {likeCount}</span>
+          <span style={pill}>💬 {commentCount}</span>
+          {feedMode === 'for_you' && <span style={pill}>⏱️ {watchSum}s</span>}
+          {feedMode === 'for_you' && <span style={pill}>👥 {watchers}</span>}
+          {feedMode === 'for_you' && <span style={pill}>✅ {completions}</span>}
+          {feedMode === 'for_you' && <span style={pill}>⭐ {score.toFixed(2)}</span>}
+        </div>
+
+        <div style={{ marginTop: 10 }}>
+          <PostComments postId={post.id} currentUserId={currentUserId} />
+        </div>
+      </article>
+    )
+  }
+
   return (
     <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
       <div
@@ -220,18 +328,37 @@ export default function FeedPage() {
           alignItems: 'center',
           gap: 12,
           marginBottom: 12,
+          flexWrap: 'wrap',
         }}
       >
-        <h1 style={{ fontSize: 22, fontWeight: 700 }}>Feed (Infinite)</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700 }}>
+          Feed ({feedMode === 'for_you' ? 'For You' : 'Latest'})
+        </h1>
 
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={() => void loadInitial()} style={btnStyle}>
+          <button onClick={() => void handleReload()} style={btnStyle}>
             Reload
           </button>
           <button onClick={() => router.push('/')} style={btnStyle}>
             ← Home
           </button>
         </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+        <button
+          onClick={() => setFeedMode('for_you')}
+          style={tabStyle(feedMode === 'for_you')}
+        >
+          For You
+        </button>
+
+        <button
+          onClick={() => setFeedMode('latest')}
+          style={tabStyle(feedMode === 'latest')}
+        >
+          Latest
+        </button>
       </div>
 
       {loading && <p>Loading…</p>}
@@ -247,67 +374,17 @@ export default function FeedPage() {
 
       {!loading && !error && posts.length > 0 && (
         <div style={{ display: 'grid', gap: 12 }}>
-          {posts.map((post, idx) => {
-            const likeCount = post.like_count ?? 0
-            const commentCount = post.comment_count ?? 0
-            const watchSum = post.watch_seconds_sum ?? 0
-            const watchers = post.watchers_count ?? 0
-            const completions = post.completion_users ?? 0
-            const score = post.score ?? 0
-
-            return (
-              <article
-                key={post.id}
-                style={{
-                  border: '1px solid #444',
-                  borderRadius: 12,
-                  padding: 12,
-                }}
-              >
-                <PostWatchTracker postId={post.id}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 700 }}>
-                        #{idx + 1} · {post.username ?? 'unknown'}
-                      </div>
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        {new Date(post.created_at).toLocaleString()}
-                      </div>
-                    </div>
-
-                    <PostLikeButton postId={post.id} currentUserId={currentUserId} />
-                  </div>
-
-                  {post.content && (
-                    <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
-                      {post.content}
-                    </div>
-                  )}
-
-                  {post.image_url && (
-                    <img
-                      src={post.image_url}
-                      alt="Post image"
-                      style={imageStyle}
-                    />
-                  )}
-
-                  <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    <span style={pill}>❤️ {likeCount}</span>
-                    <span style={pill}>💬 {commentCount}</span>
-                    <span style={pill}>⏱️ {watchSum}s</span>
-                    <span style={pill}>👥 {watchers}</span>
-                    <span style={pill}>✅ {completions}</span>
-                    <span style={pill}>⭐ {score.toFixed(2)}</span>
-                  </div>
-
-                  <div style={{ marginTop: 10 }}>
-                    <PostComments postId={post.id} currentUserId={currentUserId} />
-                  </div>
-                </PostWatchTracker>
-              </article>
+          {posts.map((post, idx) =>
+            feedMode === 'for_you' ? (
+              <PostWatchTracker key={post.id} postId={post.id}>
+                {renderPostBody(post, idx)}
+              </PostWatchTracker>
+            ) : (
+              <div key={post.id}>
+                {renderPostBody(post, idx)}
+              </div>
             )
-          })}
+          )}
 
           <div ref={sentinelRef} style={{ height: 20 }} />
 
