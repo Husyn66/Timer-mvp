@@ -22,9 +22,10 @@ type FeedPost = {
   watchers_count?: number | null
   completion_users?: number | null
   score?: number | null
+  follower_id?: string | null
 }
 
-type FeedMode = 'for_you' | 'latest'
+type FeedMode = 'for_you' | 'latest' | 'following'
 
 const PAGE_SIZE = 10
 const FEED_MODE_KEY = 'timer_feed_mode'
@@ -119,7 +120,7 @@ export default function FeedPage() {
   }, [router, supabase])
 
   const fetchFeedBatch = useCallback(
-    async (from: number, to: number) => {
+    async (uid: string, from: number, to: number) => {
       if (feedMode === 'for_you') {
         const { data, error } = await supabase
           .from('feed_ranked')
@@ -131,6 +132,20 @@ export default function FeedPage() {
           .range(from, to)
 
         if (error) throw new Error(`Failed to load For You feed: ${error.message}`)
+        return (data ?? []) as FeedPost[]
+      }
+
+      if (feedMode === 'following') {
+        const { data, error } = await supabase
+          .from('feed_following')
+          .select(
+            'follower_id, id, user_id, content, created_at, username, image_url, like_count, comment_count'
+          )
+          .eq('follower_id', uid)
+          .order('created_at', { ascending: false })
+          .range(from, to)
+
+        if (error) throw new Error(`Failed to load Following feed: ${error.message}`)
         return (data ?? []) as FeedPost[]
       }
 
@@ -186,7 +201,7 @@ export default function FeedPage() {
       const uid = await loadCurrentUser()
       if (!uid) return
 
-      const batch = await fetchFeedBatch(0, PAGE_SIZE - 1)
+      const batch = await fetchFeedBatch(uid, 0, PAGE_SIZE - 1)
 
       if (!mountedRef.current) return
 
@@ -205,6 +220,7 @@ export default function FeedPage() {
   const loadMore = useCallback(async () => {
     if (isFetchingRef.current) return
     if (!hasMore) return
+    if (!currentUserId) return
 
     isFetchingRef.current = true
     setLoadingMore(true)
@@ -214,7 +230,7 @@ export default function FeedPage() {
       const from = posts.length
       const to = from + PAGE_SIZE - 1
 
-      const batch = await fetchFeedBatch(from, to)
+      const batch = await fetchFeedBatch(currentUserId, from, to)
 
       if (!mountedRef.current) return
 
@@ -237,7 +253,7 @@ export default function FeedPage() {
         return merged
       })
 
-      if (currentUserId && mergedPosts.length > 0) {
+      if (mergedPosts.length > 0) {
         await loadLikedState(currentUserId, mergedPosts)
       }
 
@@ -308,7 +324,7 @@ export default function FeedPage() {
   useEffect(() => {
     const savedMode = window.localStorage.getItem(FEED_MODE_KEY)
 
-    if (savedMode === 'for_you' || savedMode === 'latest') {
+    if (savedMode === 'for_you' || savedMode === 'latest' || savedMode === 'following') {
       setFeedMode(savedMode)
     }
 
@@ -438,7 +454,13 @@ export default function FeedPage() {
         }}
       >
         <h1 style={{ fontSize: 22, fontWeight: 700 }}>
-          Feed ({feedMode === 'for_you' ? 'For You' : 'Latest'})
+          Feed (
+          {feedMode === 'for_you'
+            ? 'For You'
+            : feedMode === 'latest'
+              ? 'Latest'
+              : 'Following'}
+          )
         </h1>
 
         <div style={{ display: 'flex', gap: 10 }}>
@@ -451,7 +473,7 @@ export default function FeedPage() {
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
         <button
           onClick={() => setFeedMode('for_you')}
           style={tabStyle(feedMode === 'for_you')}
@@ -465,6 +487,13 @@ export default function FeedPage() {
         >
           Latest
         </button>
+
+        <button
+          onClick={() => setFeedMode('following')}
+          style={tabStyle(feedMode === 'following')}
+        >
+          Following
+        </button>
       </div>
 
       {loading && <p>Loading…</p>}
@@ -476,7 +505,13 @@ export default function FeedPage() {
         </div>
       )}
 
-      {!loading && !error && posts.length === 0 && <p>No posts yet.</p>}
+      {!loading && !error && posts.length === 0 && (
+        <p>
+          {feedMode === 'following'
+            ? 'No posts from followed users yet.'
+            : 'No posts yet.'}
+        </p>
+      )}
 
       {!loading && !error && posts.length > 0 && (
         <div style={{ display: 'grid', gap: 12 }}>
