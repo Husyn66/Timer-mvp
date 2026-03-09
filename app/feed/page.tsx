@@ -98,6 +98,12 @@ export default function FeedPage() {
     fontSize: 13,
   }
 
+  const usernameLinkStyle: CSSProperties = {
+    fontWeight: 700,
+    cursor: 'pointer',
+    textDecoration: 'underline',
+  }
+
   const loadCurrentUser = useCallback(async () => {
     const { data: authRes, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw authErr
@@ -353,10 +359,8 @@ export default function FeedPage() {
     const completions = post.completion_users ?? 0
     const score = post.score ?? 0
 
-    const authorLabel =
-      feedMode === 'for_you'
-        ? `#${idx + 1} · ${post.username ?? 'unknown'}`
-        : (post.username ?? 'unknown')
+    const rawUsername = post.username ?? 'unknown'
+    const authorLabel = feedMode === 'for_you' ? `#${idx + 1}` : null
 
     return (
       <article
@@ -369,7 +373,16 @@ export default function FeedPage() {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 700 }}>{authorLabel}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {authorLabel && <span style={{ fontWeight: 700 }}>{authorLabel} ·</span>}
+              <span
+                style={usernameLinkStyle}
+                onClick={() => router.push(`/profile/${encodeURIComponent(rawUsername)}`)}
+              >
+                {rawUsername}
+              </span>
+            </div>
+
             <div style={{ fontSize: 12, opacity: 0.7 }}>
               {new Date(post.created_at).toLocaleString()}
             </div>
