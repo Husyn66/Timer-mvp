@@ -46,6 +46,16 @@ const imageStyle: CSSProperties = {
   marginTop: 12,
 }
 
+const deleteBtnStyle: CSSProperties = {
+  padding: '8px 12px',
+  borderRadius: 10,
+  border: '1px solid #aa4444',
+  background: '#fff5f5',
+  color: '#991b1b',
+  cursor: 'pointer',
+  fontWeight: 700,
+}
+
 export default function ProfilePage() {
   const params = useParams<{ username: string }>()
   const router = useRouter()
@@ -57,6 +67,7 @@ export default function ProfilePage() {
   const [posts, setPosts] = useState<ProfilePost[]>([])
   const [loading, setLoading] = useState(true)
   const [followLoading, setFollowLoading] = useState(false)
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [profileExists, setProfileExists] = useState(true)
 
@@ -216,6 +227,31 @@ export default function ProfilePage() {
     setFollowLoading(false)
   }
 
+  async function handleDeletePost(postId: string) {
+    if (!currentUserId) return
+
+    const confirmed = window.confirm('Delete this post? This action cannot be undone.')
+    if (!confirmed) return
+
+    setDeletingPostId(postId)
+    setError('')
+
+    const { error } = await supabase
+      .from('posts')
+      .delete()
+      .eq('id', postId)
+      .eq('user_id', currentUserId)
+
+    if (error) {
+      setError(`Failed to delete post: ${error.message}`)
+      setDeletingPostId(null)
+      return
+    }
+
+    setPosts((prev) => prev.filter((post) => post.id !== postId))
+    setDeletingPostId(null)
+  }
+
   const totalLikes = posts.reduce((sum, post) => sum + (post.like_count ?? 0), 0)
   const totalComments = posts.reduce((sum, post) => sum + (post.comment_count ?? 0), 0)
 
@@ -296,35 +332,59 @@ export default function ProfilePage() {
 
       {!loading && !error && profileExists && (
         <div style={{ display: 'grid', gap: 12 }}>
-          {posts.map((post) => (
-            <article
-              key={post.id}
-              style={{
-                border: '1px solid #444',
-                borderRadius: 12,
-                padding: 12,
-              }}
-            >
-              <div style={{ fontSize: 12, opacity: 0.7 }}>
-                {new Date(post.created_at).toLocaleString()}
-              </div>
+          {posts.map((post) => {
+            const isOwnPost = currentUserId === post.user_id
+            const isDeletingThisPost = deletingPostId === post.id
 
-              {post.content && (
-                <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
-                  {post.content}
+            return (
+              <article
+                key={post.id}
+                style={{
+                  border: '1px solid #444',
+                  borderRadius: 12,
+                  padding: 12,
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>
+                    {new Date(post.created_at).toLocaleString()}
+                  </div>
+
+                  {isOwnPost && (
+                    <button
+                      onClick={() => void handleDeletePost(post.id)}
+                      style={deleteBtnStyle}
+                      disabled={isDeletingThisPost}
+                    >
+                      {isDeletingThisPost ? 'Deleting...' : 'Delete post'}
+                    </button>
+                  )}
                 </div>
-              )}
 
-              {post.image_url && (
-                <img src={post.image_url} alt="Post image" style={imageStyle} />
-              )}
+                {post.content && (
+                  <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
+                    {post.content}
+                  </div>
+                )}
 
-              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <span style={pillStyle}>❤️ {post.like_count ?? 0}</span>
-                <span style={pillStyle}>💬 {post.comment_count ?? 0}</span>
-              </div>
-            </article>
-          ))}
+                {post.image_url && (
+                  <img src={post.image_url} alt="Post image" style={imageStyle} />
+                )}
+
+                <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={pillStyle}>❤️ {post.like_count ?? 0}</span>
+                  <span style={pillStyle}>💬 {post.comment_count ?? 0}</span>
+                </div>
+              </article>
+            )
+          })}
         </div>
       )}
     </main>

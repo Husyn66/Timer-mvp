@@ -43,6 +43,7 @@ export default function FeedPage() {
   const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState('')
   const [modeReady, setModeReady] = useState(false)
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null)
 
   const mountedRef = useRef(true)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
@@ -103,6 +104,17 @@ export default function FeedPage() {
     fontWeight: 700,
     cursor: 'pointer',
     textDecoration: 'underline',
+  }
+
+  const deleteBtnStyle: CSSProperties = {
+    padding: '6px 10px',
+    borderRadius: 8,
+    border: '1px solid #aa4444',
+    background: '#fff5f5',
+    color: '#991b1b',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 700,
   }
 
   const loadCurrentUser = useCallback(async () => {
@@ -314,6 +326,39 @@ export default function FeedPage() {
     )
   }, [])
 
+  const handleDeletePost = useCallback(
+    async (postId: string) => {
+      if (!currentUserId) return
+
+      const confirmed = window.confirm('Delete this post? This action cannot be undone.')
+      if (!confirmed) return
+
+      setDeletingPostId(postId)
+      setError('')
+
+      const { error } = await supabase
+        .from('posts')
+        .delete()
+        .eq('id', postId)
+        .eq('user_id', currentUserId)
+
+      if (error) {
+        setError(`Failed to delete post: ${error.message}`)
+        setDeletingPostId(null)
+        return
+      }
+
+      setPosts((prev) => prev.filter((post) => post.id !== postId))
+      setLikedPostIds((prev) => {
+        const next = new Set(prev)
+        next.delete(postId)
+        return next
+      })
+      setDeletingPostId(null)
+    },
+    [currentUserId, supabase]
+  )
+
   useEffect(() => {
     mountedRef.current = true
     return () => {
@@ -377,6 +422,8 @@ export default function FeedPage() {
 
     const rawUsername = post.username ?? 'unknown'
     const authorLabel = feedMode === 'for_you' ? `#${idx + 1}` : null
+    const isOwnPost = currentUserId === post.user_id
+    const isDeletingThisPost = deletingPostId === post.id
 
     return (
       <article
@@ -404,13 +451,25 @@ export default function FeedPage() {
             </div>
           </div>
 
-          <PostLikeButton
-            postId={post.id}
-            currentUserId={currentUserId}
-            initialLiked={likedPostIds.has(post.id)}
-            initialCount={likeCount}
-            onToggle={applyLikeDelta}
-          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            {isOwnPost && (
+              <button
+                onClick={() => void handleDeletePost(post.id)}
+                style={deleteBtnStyle}
+                disabled={isDeletingThisPost}
+              >
+                {isDeletingThisPost ? 'Deleting...' : 'Delete post'}
+              </button>
+            )}
+
+            <PostLikeButton
+              postId={post.id}
+              currentUserId={currentUserId}
+              initialLiked={likedPostIds.has(post.id)}
+              initialCount={likeCount}
+              onToggle={applyLikeDelta}
+            />
+          </div>
         </div>
 
         {post.content && (
