@@ -222,6 +222,21 @@ export default function ProfilePage() {
       return
     }
 
+    if (currentUserId !== profileUserId) {
+      const { error: notificationError } = await supabase
+        .from('notifications')
+        .insert({
+          user_id: profileUserId,
+          actor_id: currentUserId,
+          type: 'follow',
+          post_id: null,
+        })
+
+      if (notificationError) {
+        console.error('Follow notification failed:', notificationError)
+      }
+    }
+
     setIsFollowing(true)
     setFollowersCount((prev) => prev + 1)
     setFollowLoading(false)
@@ -278,6 +293,9 @@ export default function ProfilePage() {
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <button onClick={() => router.push('/feed')} style={btnStyle}>
             ← Feed
+          </button>
+          <button onClick={() => router.push('/notifications')} style={btnStyle}>
+            Notifications
           </button>
           <button onClick={() => router.push('/')} style={btnStyle}>
             Home

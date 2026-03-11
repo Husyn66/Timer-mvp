@@ -1,103 +1,113 @@
-'use client'
+'use client';
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
+import { useState } from 'react';
+import { createClient } from '@/lib/supabase/client';
 
 export default function LoginPage() {
-  const router = useRouter()
-  const supabase = createClient() // ✅ ВОТ ЭТОГО НЕ ХВАТАЛО
+  const supabase = createClient();
 
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [resetLoading, setResetLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setMessage('');
 
-    if (!email || !password) {
-      setError('Email and password are required.')
-      return
+    if (!email.trim() || !password.trim()) {
+      setError('Enter email and password.');
+      setLoading(false);
+      return;
     }
 
-    setLoading(true)
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setLoading(false)
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    setLoading(false);
 
     if (error) {
-      setError(error.message)
-      return
+      setError(error.message);
+      return;
     }
 
-    router.push('/feed')
-    router.refresh()
+    window.location.href = '/';
+  }
+
+  async function handleForgotPassword() {
+    setError('');
+    setMessage('');
+
+    if (!email.trim()) {
+      setError('Enter your email first.');
+      return;
+    }
+
+    setResetLoading(true);
+
+    const redirectTo = `${window.location.origin}/update-password`;
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo,
+    });
+
+    setResetLoading(false);
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    setMessage('Password reset email sent. Check your inbox.');
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-xl border p-6 space-y-4">
-        <h1 className="text-2xl font-bold">Login</h1>
+    <main className="mx-auto max-w-md p-6">
+      <h1 className="mb-6 text-2xl font-bold">Login</h1>
 
-        <form onSubmit={onSubmit} className="space-y-3">
-          <div className="space-y-1">
-            <label className="text-sm">Email</label>
-            <input
-              className="w-full rounded-md border px-3 py-2"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              autoComplete="email"
-            />
-          </div>
+      <form onSubmit={handleLogin} className="space-y-4">
+        <input
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full rounded border px-3 py-2"
+        />
 
-          <div className="space-y-1">
-            <label className="text-sm">Password</label>
-            <input
-              className="w-full rounded-md border px-3 py-2"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="your password"
-              autoComplete="current-password"
-            />
-          </div>
+        <input
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full rounded border px-3 py-2"
+        />
 
-          <button
-            disabled={loading}
-            className="w-full rounded-md border px-3 py-2 font-semibold"
-            type="submit"
-          >
-            {loading ? 'Logging in...' : 'Login'}
-          </button>
-        </form>
+        {error ? <p className="text-sm text-red-600">{error}</p> : null}
+        {message ? <p className="text-sm text-green-600">{message}</p> : null}
 
-        {error && (
-          <p className="text-sm" style={{ color: 'crimson' }}>
-            {error}
-          </p>
-        )}
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full rounded bg-black px-4 py-2 text-white disabled:opacity-50"
+        >
+          {loading ? 'Signing in...' : 'Sign in'}
+        </button>
+      </form>
 
-        <div className="space-y-2">
-          <button
-            className="w-full rounded-md border px-3 py-2"
-            onClick={() => router.push('/signup')}
-            type="button"
-          >
-            Create account
-          </button>
-
-          <button
-            className="w-full rounded-md border px-3 py-2"
-            onClick={() => router.push('/')}
-            type="button"
-          >
-            Back to Home
-          </button>
-        </div>
-      </div>
+      <button
+        type="button"
+        onClick={handleForgotPassword}
+        disabled={resetLoading}
+        className="mt-4 text-sm text-blue-600 underline disabled:opacity-50"
+      >
+        {resetLoading ? 'Sending reset email...' : 'Forgot password?'}
+      </button>
     </main>
-  )
+  );
 }

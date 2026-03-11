@@ -13,12 +13,14 @@ type CommentRow = {
 
 export default function PostComments({
   postId,
+  postOwnerId,
   currentUserId,
   initialCount,
   onCommentAdded,
   toggleStyle,
 }: {
   postId: string
+  postOwnerId: string
   currentUserId: string | null
   initialCount: number
   onCommentAdded?: () => void
@@ -34,6 +36,11 @@ export default function PostComments({
   const [error, setError] = useState('')
   const [open, setOpen] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  const [count, setCount] = useState(initialCount)
+
+  useEffect(() => {
+    setCount(initialCount)
+  }, [initialCount])
 
   async function load() {
     setError('')
@@ -86,7 +93,8 @@ export default function PostComments({
     setError('')
     setOpen(false)
     setLoaded(false)
-  }, [postId])
+    setCount(initialCount)
+  }, [postId, initialCount])
 
   useEffect(() => {
     if (!open || loaded) return
@@ -123,6 +131,21 @@ export default function PostComments({
 
     const newItem = data as CommentRow
 
+    if (currentUserId !== postOwnerId) {
+      const { error: notificationError } = await supabase
+        .from('notifications')
+        .insert({
+          user_id: postOwnerId,
+          actor_id: currentUserId,
+          type: 'comment',
+          post_id: postId,
+        })
+
+      if (notificationError) {
+        console.error('Comment notification failed:', notificationError)
+      }
+    }
+
     setItems((prev) => [newItem, ...prev])
     setUsernames((prev) => ({
       ...prev,
@@ -132,12 +155,11 @@ export default function PostComments({
     setSending(false)
     setOpen(true)
     setLoaded(true)
+    setCount((prev) => prev + 1)
     onCommentAdded?.()
   }
 
-  const buttonLabel = open
-    ? 'Hide comments'
-    : `Show comments (${initialCount})`
+  const buttonLabel = open ? 'Hide comments' : `Show comments (${count})`
 
   return (
     <div style={{ marginTop: 10 }}>

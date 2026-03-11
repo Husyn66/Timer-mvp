@@ -464,6 +464,7 @@ export default function FeedPage() {
 
             <PostLikeButton
               postId={post.id}
+              postOwnerId={post.user_id}
               currentUserId={currentUserId}
               initialLiked={likedPostIds.has(post.id)}
               initialCount={likeCount}
@@ -491,6 +492,7 @@ export default function FeedPage() {
 
         <PostComments
           postId={post.id}
+          postOwnerId={post.user_id}
           currentUserId={currentUserId}
           initialCount={commentCount}
           onCommentAdded={() => applyCommentDelta(post.id, 1)}
@@ -522,9 +524,12 @@ export default function FeedPage() {
           )
         </h1>
 
-        <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <button onClick={() => void handleReload()} style={btnStyle}>
             Reload
+          </button>
+          <button onClick={() => router.push('/notifications')} style={btnStyle}>
+            Notifications
           </button>
           <button onClick={() => router.push('/')} style={btnStyle}>
             ← Home

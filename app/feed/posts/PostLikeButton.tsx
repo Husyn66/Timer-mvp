@@ -5,12 +5,14 @@ import { createClient } from '@/lib/supabase/client'
 
 export default function PostLikeButton({
   postId,
+  postOwnerId,
   currentUserId,
   initialLiked,
   initialCount,
   onToggle,
 }: {
   postId: string
+  postOwnerId: string
   currentUserId: string | null
   initialLiked: boolean
   initialCount: number
@@ -94,6 +96,21 @@ export default function PostLikeButton({
           })
 
         if (error) throw error
+
+        if (currentUserId !== postOwnerId) {
+          const { error: notificationError } = await supabase
+            .from('notifications')
+            .insert({
+              user_id: postOwnerId,
+              actor_id: currentUserId,
+              type: 'like',
+              post_id: postId,
+            })
+
+          if (notificationError) {
+            console.error('Like notification failed:', notificationError)
+          }
+        }
 
         setLiked(true)
         setCount((c) => c + 1)
