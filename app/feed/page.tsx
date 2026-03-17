@@ -5,7 +5,6 @@ import type { CSSProperties, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
-import PostWatchTracker from './posts/PostWatchTracker'
 import PostLikeButton from './posts/PostLikeButton'
 import PostComments from './posts/PostComments'
 
@@ -415,10 +414,6 @@ export default function FeedPage() {
   const renderPostBody = (post: FeedPost, idx: number): ReactNode => {
     const likeCount = post.like_count ?? 0
     const commentCount = post.comment_count ?? 0
-    const watchSum = post.watch_seconds_sum ?? 0
-    const watchers = post.watchers_count ?? 0
-    const completions = post.completion_users ?? 0
-    const score = post.score ?? 0
 
     const rawUsername = post.username ?? 'unknown'
     const authorLabel = feedMode === 'for_you' ? `#${idx + 1}` : null
@@ -484,10 +479,6 @@ export default function FeedPage() {
         <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <span style={pill}>❤️ {likeCount}</span>
           <span style={pill}>💬 {commentCount}</span>
-          {feedMode === 'for_you' && <span style={pill}>⏱️ {watchSum}s</span>}
-          {feedMode === 'for_you' && <span style={pill}>👥 {watchers}</span>}
-          {feedMode === 'for_you' && <span style={pill}>✅ {completions}</span>}
-          {feedMode === 'for_you' && <span style={pill}>⭐ {score.toFixed(2)}</span>}
         </div>
 
         <PostComments
@@ -579,15 +570,9 @@ export default function FeedPage() {
 
       {!loading && !error && posts.length > 0 && (
         <div style={{ display: 'grid', gap: 12 }}>
-          {posts.map((post, idx) =>
-            feedMode === 'for_you' ? (
-              <PostWatchTracker key={post.id} postId={post.id}>
-                {renderPostBody(post, idx)}
-              </PostWatchTracker>
-            ) : (
-              <div key={post.id}>{renderPostBody(post, idx)}</div>
-            )
-          )}
+          {posts.map((post, idx) => (
+            <div key={post.id}>{renderPostBody(post, idx)}</div>
+          ))}
 
           <div ref={sentinelRef} style={{ height: 20 }} />
 
