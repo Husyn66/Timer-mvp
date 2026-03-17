@@ -1,6 +1,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
@@ -53,15 +54,24 @@ function getTypeClasses(type: string) {
   }
 }
 
+function formatNotificationText(type: string, actorUsername: string | null) {
+  const actor = actorUsername ? `@${actorUsername}` : 'Someone'
+
+  if (type === 'like') return `${actor} liked your post.`
+  if (type === 'comment') return `${actor} commented on your post.`
+  if (type === 'follow') return `${actor} started following you.`
+
+  return `${actor} sent you a notification.`
+}
+
 export default function NotificationsPage() {
+  const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
   const [items, setItems] = useState<NotificationRow[]>([])
   const [actorUsernames, setActorUsernames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [errorText, setErrorText] = useState<string | null>(null)
-  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
-  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
@@ -87,13 +97,9 @@ export default function NotificationsPage() {
         const user = session?.user ?? null
 
         if (!user) {
-          setErrorText('User not authenticated')
-          setLoading(false)
+          router.replace('/login')
           return
         }
-
-        setCurrentUserId(user.id)
-        setCurrentUserEmail(user.email ?? null)
 
         const { data, error } = await supabase
           .from('notifications')
@@ -153,7 +159,7 @@ export default function NotificationsPage() {
     return () => {
       active = false
     }
-  }, [supabase])
+  }, [router, supabase])
 
   const getHref = (item: NotificationRow) => {
     if ((item.type === 'like' || item.type === 'comment') && item.post_id) {
@@ -171,20 +177,30 @@ export default function NotificationsPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-6 space-y-5 text-white">
-      <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
+    <main className="max-w-2xl mx-auto px-4 py-6 space-y-5 text-white">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
 
-      <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm space-y-1 text-gray-200">
-        <div><strong>Current user ID:</strong> {currentUserId ?? '—'}</div>
-        <div><strong>Current user email:</strong> {currentUserEmail ?? '—'}</div>
-        <div><strong>Loading:</strong> {loading ? 'yes' : 'no'}</div>
-        <div><strong>Error:</strong> {errorText ?? 'none'}</div>
-        <div><strong>Items count:</strong> {items.length}</div>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={() => router.push('/feed')}
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+          >
+            ← Feed
+          </button>
+
+          <button
+            onClick={() => router.push('/')}
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+          >
+            Home
+          </button>
+        </div>
       </div>
 
       {loading && (
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-gray-200">
-          Loading...
+          Loading notifications...
         </div>
       )}
 
@@ -205,7 +221,8 @@ export default function NotificationsPage() {
           {items.map((item) => {
             const typeStyle = getTypeClasses(item.type)
             const href = getHref(item)
-            const actorUsername = actorUsernames[item.actor_id] || ''
+            const actorUsername = actorUsernames[item.actor_id] || null
+            const message = formatNotificationText(item.type, actorUsername)
 
             const cardContent = (
               <>
@@ -221,19 +238,16 @@ export default function NotificationsPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 space-y-2 text-sm text-gray-200">
-                  <div>
-                    <span className="text-gray-400">Actor:</span>{' '}
-                    <span className="font-medium break-all">
-                      {actorUsername ? `@${actorUsername}` : item.actor_id}
+                <div className="mt-4 text-sm text-gray-100 leading-6">{message}</div>
+
+                {actorUsername && (
+                  <div className="mt-3 text-sm text-gray-300">
+                    Actor:{' '}
+                    <span className="font-semibold text-sky-300">
+                      @{actorUsername}
                     </span>
                   </div>
-
-                  <div>
-                    <span className="text-gray-400">Post:</span>{' '}
-                    <span className="font-medium break-all">{item.post_id ?? '—'}</span>
-                  </div>
-                </div>
+                )}
 
                 {href && (
                   <div className="mt-4 text-sm font-medium text-sky-300">
@@ -266,6 +280,6 @@ export default function NotificationsPage() {
           })}
         </div>
       )}
-    </div>
+    </main>
   )
 }
