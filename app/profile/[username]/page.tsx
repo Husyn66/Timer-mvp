@@ -57,12 +57,19 @@ const deleteBtnStyle: CSSProperties = {
 }
 
 export default function ProfilePage() {
-  const params = useParams<{ username: string }>()
+  const params = useParams<{ username?: string | string[] }>()
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
 
-  const rawUsername = params?.username ?? ''
-  const username = decodeURIComponent(rawUsername)
+  const rawUsernameParam = params?.username
+  const rawUsername =
+    typeof rawUsernameParam === 'string'
+      ? rawUsernameParam.trim()
+      : Array.isArray(rawUsernameParam)
+        ? (rawUsernameParam[0] ?? '').trim()
+        : ''
+
+  const username = rawUsername ? decodeURIComponent(rawUsername) : ''
 
   const [posts, setPosts] = useState<ProfilePost[]>([])
   const [loading, setLoading] = useState(true)
@@ -86,100 +93,123 @@ export default function ProfilePage() {
       setError('')
       setProfileExists(true)
 
-      const {
-        data: { user },
-        error: authError,
-      } = await supabase.auth.getUser()
-
-      if (!active) return
-
-      if (authError) {
-        setError(authError.message)
-        setLoading(false)
-        return
-      }
-
-      setCurrentUserId(user?.id ?? null)
-
-      const { data, error } = await supabase
-        .from('feed_posts')
-        .select(
-          'id, content, image_url, created_at, user_id, username, like_count, comment_count'
-        )
-        .eq('username', username)
-        .order('created_at', { ascending: false })
-
-      if (!active) return
-
-      if (error) {
-        setError(error.message)
-        setLoading(false)
-        return
-      }
-
-      const rows = (data ?? []) as ProfilePost[]
-
-      setPosts(rows)
-      setProfileExists(rows.length > 0)
-
-      if (rows.length === 0) {
-        setProfileUserId(null)
-        setFollowersCount(0)
-        setFollowingCount(0)
-        setIsFollowing(false)
-        setLoading(false)
-        return
-      }
-
-      const targetUserId = rows[0].user_id
-      setProfileUserId(targetUserId)
-
-      const [{ count: followers }, { count: following }] = await Promise.all([
-        supabase
-          .from('follows')
-          .select('*', { count: 'exact', head: true })
-          .eq('following_id', targetUserId),
-        supabase
-          .from('follows')
-          .select('*', { count: 'exact', head: true })
-          .eq('follower_id', targetUserId),
-      ])
-
-      if (!active) return
-
-      setFollowersCount(followers ?? 0)
-      setFollowingCount(following ?? 0)
-
-      if (user?.id && user.id !== targetUserId) {
-        const { data: followRow, error: followError } = await supabase
-          .from('follows')
-          .select('follower_id, following_id')
-          .eq('follower_id', user.id)
-          .eq('following_id', targetUserId)
-          .maybeSingle()
+      try {
+        const {
+          data: { session },
+          error: authError,
+        } = await supabase.auth.getSession()
 
         if (!active) return
 
-        if (followError) {
-          setError(followError.message)
+        if (authError) {
+          setError(authError.message)
           setLoading(false)
           return
         }
 
-        setIsFollowing(!!followRow)
-      } else {
-        setIsFollowing(false)
+        const user = session?.user ?? null
+        setCurrentUserId(user?.id ?? null)
+
+        const { data, error } = await supabase
+          .from('feed_posts')
+          .select(
+            'id, content, image_url, created_at, user_id, username, like_count, comment_count'
+          )
+          .eq('username', username)
+          .order('created_at', { ascending: false })
+
+        if (!active) return
+
+        if (error) {
+          setError(error.message)
+          setLoading(false)
+          return
+        }
+
+        const rows = (data ?? []) as ProfilePost[]
+
+        setPosts(rows)
+        setProfileExists(rows.length > 0)
+
+        if (rows.length === 0) {
+          setProfileUserId(null)
+          setFollowersCount(0)
+          setFollowingCount(0)
+          setIsFollowing(false)
+          setLoading(false)
+          return
+        }
+
+        const targetUserId = rows[0].user_id
+        setProfileUserId(targetUserId)
+
+        const [
+          { count: followers, error: followersError },
+          { count: following, error: followingError },
+        ] = await Promise.all([
+          supabase
+            .from('follows')
+            .select('*', { count: 'exact', head: true })
+            .eq('following_id', targetUserId),
+          supabase
+            .from('follows')
+            .select('*', { count: 'exact', head: true })
+            .eq('follower_id', targetUserId),
+        ])
+
+        if (!active) return
+
+        if (followersError) {
+          setError(followersError.message)
+          setLoading(false)
+          return
+        }
+
+        if (followingError) {
+          setError(followingError.message)
+          setLoading(false)
+          return
+        }
+
+        setFollowersCount(followers ?? 0)
+        setFollowingCount(following ?? 0)
+
+        if (user?.id && user.id !== targetUserId) {
+          const { data: followRow, error: followError } = await supabase
+            .from('follows')
+            .select('follower_id, following_id')
+            .eq('follower_id', user.id)
+            .eq('following_id', targetUserId)
+            .maybeSingle()
+
+          if (!active) return
+
+          if (followError) {
+            setError(followError.message)
+            setLoading(false)
+            return
+          }
+
+          setIsFollowing(!!followRow)
+        } else {
+          setIsFollowing(false)
+        }
+
+        setLoading(false)
+      } catch (e: unknown) {
+        if (!active) return
+        setError(e instanceof Error ? e.message : 'Failed to load profile')
+        setLoading(false)
       }
-
-      setLoading(false)
     }
 
-    if (username) {
-      void loadProfile()
-    } else {
-      setError('Invalid username.')
+    if (!username) {
+      setError('Missing username in route. Open profile by /profile/<username>.')
       setLoading(false)
+      return
     }
+
+    void loadProfile()
 
     return () => {
       active = false
@@ -286,7 +316,9 @@ export default function ProfilePage() {
         }}
       >
         <div>
-          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>@{username}</h1>
+          <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>
+            @{username || 'unknown'}
+          </h1>
           <p style={{ marginTop: 8, opacity: 0.75 }}>Profile Page MVP</p>
         </div>
 
