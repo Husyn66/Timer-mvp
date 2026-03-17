@@ -16,6 +16,11 @@ type ProfilePost = {
   comment_count: number | null
 }
 
+type ProfileIdentityRow = {
+  id: string
+  username: string | null
+}
+
 const btnStyle: CSSProperties = {
   padding: '8px 12px',
   borderRadius: 10,
@@ -79,6 +84,7 @@ export default function ProfilePage() {
   const [profileExists, setProfileExists] = useState(true)
 
   const [profileUserId, setProfileUserId] = useState<string | null>(null)
+  const [profileUsername, setProfileUsername] = useState<string>('')
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
 
   const [followersCount, setFollowersCount] = useState(0)
@@ -92,6 +98,12 @@ export default function ProfilePage() {
       setLoading(true)
       setError('')
       setProfileExists(true)
+      setPosts([])
+      setProfileUserId(null)
+      setProfileUsername('')
+      setFollowersCount(0)
+      setFollowingCount(0)
+      setIsFollowing(false)
 
       try {
         const {
@@ -110,43 +122,45 @@ export default function ProfilePage() {
         const user = session?.user ?? null
         setCurrentUserId(user?.id ?? null)
 
-        const { data, error } = await supabase
-          .from('feed_posts')
-          .select(
-            'id, content, image_url, created_at, user_id, username, like_count, comment_count'
-          )
+        const { data: profileRow, error: profileError } = await supabase
+          .from('profiles')
+          .select('id, username')
           .eq('username', username)
-          .order('created_at', { ascending: false })
+          .maybeSingle()
 
         if (!active) return
 
-        if (error) {
-          setError(error.message)
+        if (profileError) {
+          setError(profileError.message)
           setLoading(false)
           return
         }
 
-        const rows = (data ?? []) as ProfilePost[]
+        const typedProfile = (profileRow ?? null) as ProfileIdentityRow | null
 
-        setPosts(rows)
-        setProfileExists(rows.length > 0)
-
-        if (rows.length === 0) {
-          setProfileUserId(null)
-          setFollowersCount(0)
-          setFollowingCount(0)
-          setIsFollowing(false)
+        if (!typedProfile) {
+          setProfileExists(false)
           setLoading(false)
           return
         }
 
-        const targetUserId = rows[0].user_id
+        const targetUserId = typedProfile.id
+        setProfileExists(true)
         setProfileUserId(targetUserId)
+        setProfileUsername(typedProfile.username?.trim() || username)
 
         const [
+          { data: postRows, error: postsError },
           { count: followers, error: followersError },
           { count: following, error: followingError },
         ] = await Promise.all([
+          supabase
+            .from('feed_posts')
+            .select(
+              'id, content, image_url, created_at, user_id, username, like_count, comment_count'
+            )
+            .eq('user_id', targetUserId)
+            .order('created_at', { ascending: false }),
           supabase
             .from('follows')
             .select('*', { count: 'exact', head: true })
@@ -158,6 +172,12 @@ export default function ProfilePage() {
         ])
 
         if (!active) return
+
+        if (postsError) {
+          setError(postsError.message)
+          setLoading(false)
+          return
+        }
 
         if (followersError) {
           setError(followersError.message)
@@ -171,6 +191,7 @@ export default function ProfilePage() {
           return
         }
 
+        setPosts((postRows ?? []) as ProfilePost[])
         setFollowersCount(followers ?? 0)
         setFollowingCount(following ?? 0)
 
@@ -303,6 +324,8 @@ export default function ProfilePage() {
   const isOwnProfile =
     !!currentUserId && !!profileUserId && currentUserId === profileUserId
 
+  const displayUsername = profileUsername || username || 'unknown'
+
   return (
     <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
       <div
@@ -317,7 +340,7 @@ export default function ProfilePage() {
       >
         <div>
           <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>
-            @{username || 'unknown'}
+            @{displayUsername}
           </h1>
           <p style={{ marginTop: 8, opacity: 0.75 }}>Profile Page MVP</p>
         </div>
@@ -375,12 +398,21 @@ export default function ProfilePage() {
         <div style={{ padding: 12, border: '1px solid #444', borderRadius: 8 }}>
           <p style={{ margin: 0, fontWeight: 700 }}>Profile not found</p>
           <p style={{ marginTop: 6 }}>
-            No posts found for username: <strong>@{username}</strong>
+            No profile exists for username: <strong>@{username}</strong>
           </p>
         </div>
       )}
 
-      {!loading && !error && profileExists && (
+      {!loading && !error && profileExists && posts.length === 0 && (
+        <div style={{ padding: 12, border: '1px solid #444', borderRadius: 8 }}>
+          <p style={{ margin: 0, fontWeight: 700 }}>No posts yet</p>
+          <p style={{ marginTop: 6 }}>
+            This profile exists, but there are no posts yet.
+          </p>
+        </div>
+      )}
+
+      {!loading && !error && profileExists && posts.length > 0 && (
         <div style={{ display: 'grid', gap: 12 }}>
           {posts.map((post) => {
             const isOwnPost = currentUserId === post.user_id
