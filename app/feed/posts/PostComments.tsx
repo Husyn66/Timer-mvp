@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchWithRetry } from '@/lib/supabase/fetchWithRetry'
 
 type CommentRow = {
   id: string
@@ -38,50 +39,117 @@ export default function PostComments({
   const [loaded, setLoaded] = useState(false)
   const [count, setCount] = useState(initialCount)
 
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
   useEffect(() => {
     setCount(initialCount)
   }, [initialCount])
+
+  const shouldRetryCommentError = (error: unknown) => {
+    const message =
+      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+
+    return (
+      message.includes('failed to fetch') ||
+      message.includes('network') ||
+      message.includes('timeout') ||
+      message.includes('temporar') ||
+      message.includes('fetch')
+    )
+  }
 
   async function load() {
     setError('')
     setLoading(true)
 
-    const { data, error } = await supabase
-      .from('post_comments')
-      .select('id, content, created_at, user_id')
-      .eq('post_id', postId)
-      .order('created_at', { ascending: false })
-      .limit(50)
+    try {
+      const rows = await fetchWithRetry(
+        async () => {
+          const { data, error } = await supabase
+            .from('post_comments')
+            .select('id, content, created_at, user_id')
+            .eq('post_id', postId)
+            .order('created_at', { ascending: false })
+            .limit(50)
 
-    if (error) {
-      setError(error.message)
-      setItems([])
-      setLoading(false)
-      return
-    }
+          if (error) {
+            throw new Error(`Failed to load comments: ${error.message}`)
+          }
 
-    const rows = (data ?? []) as CommentRow[]
-    setItems(rows)
-
-    const uniqueUserIds = Array.from(new Set(rows.map((r) => r.user_id)))
-
-    if (uniqueUserIds.length > 0) {
-      const { data: profs, error: profErr } = await supabase
-        .from('profiles')
-        .select('id, username')
-        .in('id', uniqueUserIds)
-
-      if (!profErr && profs) {
-        const map: Record<string, string> = {}
-        for (const p of profs as any[]) {
-          map[p.id] = p.username ?? 'user'
+          return (data ?? []) as CommentRow[]
+        },
+        {
+          retries: 2,
+          delayMs: 800,
+          shouldRetry: shouldRetryCommentError,
         }
-        setUsernames(map)
+      )
+
+      if (!mountedRef.current) return
+
+      setItems(rows)
+
+      const uniqueUserIds = Array.from(new Set(rows.map((r) => r.user_id)))
+
+      if (uniqueUserIds.length > 0) {
+        try {
+          const profilesMap = await fetchWithRetry(
+            async () => {
+              const { data: profs, error: profErr } = await supabase
+                .from('profiles')
+                .select('id, username')
+                .in('id', uniqueUserIds)
+
+              if (profErr) {
+                throw new Error(`Failed to load comment usernames: ${profErr.message}`)
+              }
+
+              const map: Record<string, string> = {}
+
+              for (const p of (profs ?? []) as Array<{ id: string; username: string | null }>) {
+                map[p.id] = p.username ?? 'user'
+              }
+
+              return map
+            },
+            {
+              retries: 1,
+              delayMs: 700,
+              shouldRetry: shouldRetryCommentError,
+            }
+          )
+
+          if (mountedRef.current) {
+            setUsernames(profilesMap)
+          }
+        } catch (profileErr) {
+          console.error('Failed to load comment usernames:', profileErr)
+        }
+      } else {
+        setUsernames({})
+      }
+
+      if (mountedRef.current) {
+        setLoaded(true)
+      }
+    } catch (err) {
+      if (!mountedRef.current) return
+
+      const msg = err instanceof Error ? err.message : 'Failed to load comments.'
+      setError(msg)
+      setItems([])
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false)
       }
     }
-
-    setLoaded(true)
-    setLoading(false)
   }
 
   useEffect(() => {
@@ -110,63 +178,94 @@ export default function PostComments({
       return
     }
 
+    if (sending) return
+
     setSending(true)
     setError('')
 
-    const { data, error } = await supabase
-      .from('post_comments')
-      .insert({
-        post_id: postId,
-        user_id: currentUserId,
-        content: trimmed,
-      })
-      .select('id, content, created_at, user_id')
-      .single()
+    try {
+      const newItem = await fetchWithRetry(
+        async () => {
+          const { data, error } = await supabase
+            .from('post_comments')
+            .insert({
+              post_id: postId,
+              user_id: currentUserId,
+              content: trimmed,
+            })
+            .select('id, content, created_at, user_id')
+            .single()
 
-    if (error) {
-      setError(error.message)
-      setSending(false)
-      return
-    }
+          if (error) {
+            throw new Error(`Failed to send comment: ${error.message}`)
+          }
 
-    const newItem = data as CommentRow
+          return data as CommentRow
+        },
+        {
+          retries: 1,
+          delayMs: 700,
+          shouldRetry: shouldRetryCommentError,
+        }
+      )
 
-    if (currentUserId !== postOwnerId) {
-      const { error: notificationError } = await supabase
-        .from('notifications')
-        .insert({
-          user_id: postOwnerId,
-          actor_id: currentUserId,
-          type: 'comment',
-          post_id: postId,
-        })
+      if (currentUserId !== postOwnerId) {
+        try {
+          await fetchWithRetry(
+            async () => {
+              const { error: notificationError } = await supabase
+                .from('notifications')
+                .insert({
+                  user_id: postOwnerId,
+                  actor_id: currentUserId,
+                  type: 'comment',
+                  post_id: postId,
+                })
 
-      if (notificationError) {
-        console.error('Comment notification failed:', notificationError)
+              if (notificationError) {
+                throw new Error(`Comment notification failed: ${notificationError.message}`)
+              }
+            },
+            {
+              retries: 1,
+              delayMs: 700,
+              shouldRetry: shouldRetryCommentError,
+            }
+          )
+        } catch (notificationErr) {
+          console.error('Comment notification failed:', notificationErr)
+        }
+      }
+
+      if (!mountedRef.current) return
+
+      setItems((prev) => [newItem, ...prev])
+      setUsernames((prev) => ({
+        ...prev,
+        [currentUserId]: prev[currentUserId] ?? 'user',
+      }))
+      setText('')
+      setOpen(true)
+      setLoaded(true)
+      setCount((prev) => prev + 1)
+      onCommentAdded?.()
+    } catch (err) {
+      if (!mountedRef.current) return
+
+      const msg = err instanceof Error ? err.message : 'Failed to send comment.'
+      setError(msg)
+    } finally {
+      if (mountedRef.current) {
+        setSending(false)
       }
     }
-
-    setItems((prev) => [newItem, ...prev])
-    setUsernames((prev) => ({
-      ...prev,
-      [currentUserId]: prev[currentUserId] ?? 'user',
-    }))
-    setText('')
-    setSending(false)
-    setOpen(true)
-    setLoaded(true)
-    setCount((prev) => prev + 1)
-    onCommentAdded?.()
   }
 
   const buttonLabel = open ? 'Hide comments' : `Show comments (${count})`
 
   return (
     <div style={{ marginTop: 10 }}>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        style={toggleStyle}
-      >
+      <button onClick={() => setOpen((v) => !v)} style={toggleStyle}>
         {buttonLabel}
       </button>
 
@@ -184,9 +283,9 @@ export default function PostComments({
             <button
               onClick={() => void send()}
               disabled={sending || !currentUserId || text.trim().length === 0}
-              className="rounded-md px-3 py-2 text-sm bg-white/10 hover:bg-white/15 disabled:opacity-50"
+              className="rounded-md bg-white/10 px-3 py-2 text-sm hover:bg-white/15 disabled:opacity-50"
             >
-              Send
+              {sending ? 'Sending...' : 'Send'}
             </button>
           </div>
 
@@ -204,7 +303,7 @@ export default function PostComments({
                     <div className="text-xs opacity-70">
                       {(usernames[c.user_id] ?? 'user')} • {new Date(c.created_at).toLocaleString()}
                     </div>
-                    <div className="text-sm mt-1 whitespace-pre-wrap">{c.content}</div>
+                    <div className="mt-1 whitespace-pre-wrap text-sm">{c.content}</div>
                   </div>
                 ))}
               </div>

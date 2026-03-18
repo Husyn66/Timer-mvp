@@ -4,9 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchWithRetry } from '@/lib/supabase/fetchWithRetry'
 
 import PostLikeButton from './posts/PostLikeButton'
 import PostComments from './posts/PostComments'
+import RetryBlock from '../components/RetryBlock'
 
 type FeedPost = {
   id: string
@@ -39,6 +41,7 @@ export default function FeedPage() {
   const [feedMode, setFeedMode] = useState<FeedMode>('for_you')
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [retrying, setRetrying] = useState(false)
   const [hasMore, setHasMore] = useState(true)
   const [error, setError] = useState('')
   const [modeReady, setModeReady] = useState(false)
@@ -116,6 +119,19 @@ export default function FeedPage() {
     fontWeight: 700,
   }
 
+  const shouldRetryFeedError = useCallback((error: unknown) => {
+    const message =
+      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+
+    return (
+      message.includes('failed to fetch') ||
+      message.includes('network') ||
+      message.includes('timeout') ||
+      message.includes('temporar') ||
+      message.includes('fetch')
+    )
+  }, [])
+
   const loadCurrentUser = useCallback(async () => {
     const { data: authRes, error: authErr } = await supabase.auth.getUser()
     if (authErr) throw authErr
@@ -132,46 +148,64 @@ export default function FeedPage() {
 
   const fetchFeedBatch = useCallback(
     async (uid: string, from: number, to: number) => {
-      if (feedMode === 'for_you') {
-        const { data, error } = await supabase
-          .from('feed_ranked')
-          .select(
-            'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
-          )
-          .order('score', { ascending: false })
-          .order('created_at', { ascending: false })
-          .range(from, to)
+      return fetchWithRetry(
+        async () => {
+          if (feedMode === 'for_you') {
+            const { data, error } = await supabase
+              .from('feed_ranked')
+              .select(
+                'id, content, image_url, created_at, user_id, username, like_count, comment_count, watch_seconds_sum, watchers_count, completion_users, score'
+              )
+              .order('score', { ascending: false })
+              .order('created_at', { ascending: false })
+              .range(from, to)
 
-        if (error) throw new Error(`Failed to load For You feed: ${error.message}`)
-        return (data ?? []) as FeedPost[]
-      }
+            if (error) {
+              throw new Error(`Failed to load For You feed: ${error.message}`)
+            }
 
-      if (feedMode === 'following') {
-        const { data, error } = await supabase
-          .from('feed_following')
-          .select(
-            'follower_id, id, user_id, content, created_at, username, image_url, like_count, comment_count'
-          )
-          .eq('follower_id', uid)
-          .order('created_at', { ascending: false })
-          .range(from, to)
+            return (data ?? []) as FeedPost[]
+          }
 
-        if (error) throw new Error(`Failed to load Following feed: ${error.message}`)
-        return (data ?? []) as FeedPost[]
-      }
+          if (feedMode === 'following') {
+            const { data, error } = await supabase
+              .from('feed_following')
+              .select(
+                'follower_id, id, user_id, content, created_at, username, image_url, like_count, comment_count'
+              )
+              .eq('follower_id', uid)
+              .order('created_at', { ascending: false })
+              .range(from, to)
 
-      const { data, error } = await supabase
-        .from('feed_posts')
-        .select(
-          'id, user_id, content, created_at, username, comment_count, image_url, like_count'
-        )
-        .order('created_at', { ascending: false })
-        .range(from, to)
+            if (error) {
+              throw new Error(`Failed to load Following feed: ${error.message}`)
+            }
 
-      if (error) throw new Error(`Failed to load Latest feed: ${error.message}`)
-      return (data ?? []) as FeedPost[]
+            return (data ?? []) as FeedPost[]
+          }
+
+          const { data, error } = await supabase
+            .from('feed_posts')
+            .select(
+              'id, user_id, content, created_at, username, comment_count, image_url, like_count'
+            )
+            .order('created_at', { ascending: false })
+            .range(from, to)
+
+          if (error) {
+            throw new Error(`Failed to load Latest feed: ${error.message}`)
+          }
+
+          return (data ?? []) as FeedPost[]
+        },
+        {
+          retries: 2,
+          delayMs: 900,
+          shouldRetry: shouldRetryFeedError,
+        }
+      )
     },
-    [feedMode, supabase]
+    [feedMode, shouldRetryFeedError, supabase]
   )
 
   const loadLikedState = useCallback(
@@ -183,21 +217,32 @@ export default function FeedPage() {
 
       const postIds = visiblePosts.map((p) => p.id)
 
-      const { data, error } = await supabase
-        .from('post_likes')
-        .select('post_id')
-        .eq('user_id', uid)
-        .in('post_id', postIds)
+      const likedIds = await fetchWithRetry(
+        async () => {
+          const { data, error } = await supabase
+            .from('post_likes')
+            .select('post_id')
+            .eq('user_id', uid)
+            .in('post_id', postIds)
 
-      if (error) throw new Error(`Failed to load like state: ${error.message}`)
+          if (error) {
+            throw new Error(`Failed to load like state: ${error.message}`)
+          }
 
-      const likedIds = new Set<string>((data ?? []).map((row: any) => row.post_id))
+          return new Set<string>((data ?? []).map((row: { post_id: string }) => row.post_id))
+        },
+        {
+          retries: 1,
+          delayMs: 700,
+          shouldRetry: shouldRetryFeedError,
+        }
+      )
 
       if (mountedRef.current) {
         setLikedPostIds(likedIds)
       }
     },
-    [supabase]
+    [shouldRetryFeedError, supabase]
   )
 
   const loadInitial = useCallback(async () => {
@@ -281,11 +326,16 @@ export default function FeedPage() {
   }, [currentUserId, fetchFeedBatch, hasMore, loadLikedState, posts.length])
 
   const handleReload = useCallback(async () => {
-    setPosts([])
-    setLikedPostIds(new Set())
-    setHasMore(true)
-    setError('')
-    await loadInitial()
+    try {
+      setRetrying(true)
+      setPosts([])
+      setLikedPostIds(new Set())
+      setHasMore(true)
+      setError('')
+      await loadInitial()
+    } finally {
+      setRetrying(false)
+    }
   }, [loadInitial])
 
   const applyLikeDelta = useCallback((postId: string, nextLiked: boolean) => {
@@ -335,27 +385,40 @@ export default function FeedPage() {
       setDeletingPostId(postId)
       setError('')
 
-      const { error } = await supabase
-        .from('posts')
-        .delete()
-        .eq('id', postId)
-        .eq('user_id', currentUserId)
+      try {
+        await fetchWithRetry(
+          async () => {
+            const { error } = await supabase
+              .from('posts')
+              .delete()
+              .eq('id', postId)
+              .eq('user_id', currentUserId)
 
-      if (error) {
-        setError(`Failed to delete post: ${error.message}`)
+            if (error) {
+              throw new Error(`Failed to delete post: ${error.message}`)
+            }
+          },
+          {
+            retries: 1,
+            delayMs: 700,
+            shouldRetry: shouldRetryFeedError,
+          }
+        )
+
+        setPosts((prev) => prev.filter((post) => post.id !== postId))
+        setLikedPostIds((prev) => {
+          const next = new Set(prev)
+          next.delete(postId)
+          return next
+        })
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Unknown error'
+        setError(msg)
+      } finally {
         setDeletingPostId(null)
-        return
       }
-
-      setPosts((prev) => prev.filter((post) => post.id !== postId))
-      setLikedPostIds((prev) => {
-        const next = new Set(prev)
-        next.delete(postId)
-        return next
-      })
-      setDeletingPostId(null)
     },
-    [currentUserId, supabase]
+    [currentUserId, shouldRetryFeedError, supabase]
   )
 
   useEffect(() => {
@@ -396,7 +459,7 @@ export default function FeedPage() {
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0]
-        if (entry.isIntersecting && hasMore && !loading && !loadingMore) {
+        if (entry.isIntersecting && hasMore && !loading && !loadingMore && !error) {
           void loadMore()
         }
       },
@@ -409,7 +472,7 @@ export default function FeedPage() {
 
     observer.observe(sentinelRef.current)
     return () => observer.disconnect()
-  }, [hasMore, loading, loadingMore, loadMore])
+  }, [error, hasMore, loading, loadingMore, loadMore])
 
   const renderPostBody = (post: FeedPost, idx: number): ReactNode => {
     const likeCount = post.like_count ?? 0
@@ -516,8 +579,12 @@ export default function FeedPage() {
         </h1>
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button onClick={() => void handleReload()} style={btnStyle}>
-            Reload
+          <button
+            onClick={() => void handleReload()}
+            style={btnStyle}
+            disabled={loading || loadingMore || retrying}
+          >
+            {retrying ? 'Retrying...' : 'Reload'}
           </button>
           <button onClick={() => router.push('/notifications')} style={btnStyle}>
             Notifications
@@ -532,6 +599,7 @@ export default function FeedPage() {
         <button
           onClick={() => setFeedMode('for_you')}
           style={tabStyle(feedMode === 'for_you')}
+          disabled={loading || loadingMore}
         >
           For You
         </button>
@@ -539,6 +607,7 @@ export default function FeedPage() {
         <button
           onClick={() => setFeedMode('latest')}
           style={tabStyle(feedMode === 'latest')}
+          disabled={loading || loadingMore}
         >
           Latest
         </button>
@@ -546,6 +615,7 @@ export default function FeedPage() {
         <button
           onClick={() => setFeedMode('following')}
           style={tabStyle(feedMode === 'following')}
+          disabled={loading || loadingMore}
         >
           Following
         </button>
@@ -554,10 +624,12 @@ export default function FeedPage() {
       {loading && <p>Loading…</p>}
 
       {!loading && error && (
-        <div style={{ padding: 12, border: '1px solid #f00', borderRadius: 8 }}>
-          <p style={{ margin: 0, fontWeight: 700 }}>Error</p>
-          <p style={{ marginTop: 6 }}>{error}</p>
-        </div>
+        <RetryBlock
+          title="Feed is temporarily unavailable"
+          description={error}
+          onRetry={() => void handleReload()}
+          isRetrying={retrying}
+        />
       )}
 
       {!loading && !error && posts.length === 0 && (

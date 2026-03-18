@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchWithRetry } from '@/lib/supabase/fetchWithRetry'
 
 export default function PostLikeButton({
   postId,
@@ -22,104 +23,133 @@ export default function PostLikeButton({
 
   const [liked, setLiked] = useState(initialLiked)
   const [count, setCount] = useState(initialCount)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     setLiked(initialLiked)
     setCount(initialCount)
   }, [initialLiked, initialCount])
 
-  useEffect(() => {
-    if (!currentUserId) {
-      setLiked(false)
-      setLoading(false)
-      return
-    }
+  const shouldRetryLikeError = (error: unknown) => {
+    const message =
+      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
 
-    let cancelled = false
-
-    const load = async () => {
-      setLoading(true)
-
-      const { data, error } = await supabase
-        .from('post_likes')
-        .select('user_id')
-        .eq('post_id', postId)
-
-      if (cancelled) return
-
-      if (error) {
-        setLoading(false)
-        return
-      }
-
-      const rows = data ?? []
-      const total = rows.length
-      const isLiked = rows.some((row: any) => row.user_id === currentUserId)
-
-      setCount(total)
-      setLiked(isLiked)
-      setLoading(false)
-    }
-
-    void load()
-
-    return () => {
-      cancelled = true
-    }
-  }, [postId, currentUserId, supabase])
+    return (
+      message.includes('failed to fetch') ||
+      message.includes('network') ||
+      message.includes('timeout') ||
+      message.includes('temporar') ||
+      message.includes('fetch')
+    )
+  }
 
   const toggle = async () => {
     if (!currentUserId || loading) return
 
+    const prevLiked = liked
+    const prevCount = count
+
+    const nextLiked = !prevLiked
+    const nextCount = nextLiked ? prevCount + 1 : Math.max(prevCount - 1, 0)
+
     setLoading(true)
 
+    // optimistic UI
+    setLiked(nextLiked)
+    setCount(nextCount)
+    onToggle(postId, nextLiked)
+
     try {
-      if (liked) {
-        const { error } = await supabase
-          .from('post_likes')
-          .delete()
-          .eq('post_id', postId)
-          .eq('user_id', currentUserId)
+      if (prevLiked) {
+        await fetchWithRetry(
+          async () => {
+            const { error } = await supabase
+              .from('post_likes')
+              .delete()
+              .eq('post_id', postId)
+              .eq('user_id', currentUserId)
 
-        if (error) throw error
-
-        setLiked(false)
-        setCount((c) => Math.max(c - 1, 0))
-        onToggle(postId, false)
+            if (error) {
+              throw new Error(`Failed to remove like: ${error.message}`)
+            }
+          },
+          {
+            retries: 1,
+            delayMs: 700,
+            shouldRetry: shouldRetryLikeError,
+          }
+        )
       } else {
-        const { error } = await supabase
-          .from('post_likes')
-          .insert({
-            post_id: postId,
-            user_id: currentUserId,
-          })
+        await fetchWithRetry(
+          async () => {
+            const { error } = await supabase
+              .from('post_likes')
+              .insert({
+                post_id: postId,
+                user_id: currentUserId,
+              })
 
-        if (error) throw error
+            if (error) {
+              throw new Error(`Failed to add like: ${error.message}`)
+            }
+          },
+          {
+            retries: 1,
+            delayMs: 700,
+            shouldRetry: shouldRetryLikeError,
+          }
+        )
 
         if (currentUserId !== postOwnerId) {
-          const { error: notificationError } = await supabase
-            .from('notifications')
-            .insert({
-              user_id: postOwnerId,
-              actor_id: currentUserId,
-              type: 'like',
-              post_id: postId,
-            })
+          try {
+            await fetchWithRetry(
+              async () => {
+                const { error } = await supabase
+                  .from('notifications')
+                  .insert({
+                    user_id: postOwnerId,
+                    actor_id: currentUserId,
+                    type: 'like',
+                    post_id: postId,
+                  })
 
-          if (notificationError) {
-            console.error('Like notification failed:', notificationError)
+                if (error) {
+                  throw new Error(`Like notification failed: ${error.message}`)
+                }
+              },
+              {
+                retries: 1,
+                delayMs: 700,
+                shouldRetry: shouldRetryLikeError,
+              }
+            )
+          } catch (notificationErr) {
+            console.error('Like notification failed:', notificationErr)
           }
         }
-
-        setLiked(true)
-        setCount((c) => c + 1)
-        onToggle(postId, true)
       }
     } catch (err) {
       console.error('Like toggle failed:', err)
+
+      // rollback
+      if (!mountedRef.current) return
+
+      setLiked(prevLiked)
+      setCount(prevCount)
+      onToggle(postId, prevLiked)
     } finally {
-      setLoading(false)
+      if (mountedRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -134,8 +164,9 @@ export default function PostLikeButton({
         fontSize: 18,
         opacity: loading || !currentUserId ? 0.7 : 1,
       }}
+      aria-label={liked ? 'Unlike post' : 'Like post'}
     >
-      {liked ? '❤️' : '🤍'} {count}
+      {loading ? '⏳' : liked ? '❤️' : '🤍'} {count}
     </button>
   )
 }
