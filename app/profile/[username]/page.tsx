@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -64,7 +64,8 @@ const deleteBtnStyle: CSSProperties = {
 export default function ProfilePage() {
   const params = useParams<{ username?: string | string[] }>()
   const router = useRouter()
-  const supabase = useMemo(() => createClient(), [])
+  const supabaseRef = useRef(createClient())
+  const followInProgressRef = useRef(false)
 
   const rawUsernameParam = params?.username
   const rawUsername =
@@ -95,6 +96,12 @@ export default function ProfilePage() {
     let active = true
 
     async function loadProfile() {
+      if (!username) {
+        setError('Missing username in route. Open profile by /profile/<username>.')
+        setLoading(false)
+        return
+      }
+
       setLoading(true)
       setError('')
       setProfileExists(true)
@@ -109,7 +116,7 @@ export default function ProfilePage() {
         const {
           data: { session },
           error: authError,
-        } = await supabase.auth.getSession()
+        } = await supabaseRef.current.auth.getSession()
 
         if (!active) return
 
@@ -122,7 +129,7 @@ export default function ProfilePage() {
         const user = session?.user ?? null
         setCurrentUserId(user?.id ?? null)
 
-        const { data: profileRow, error: profileError } = await supabase
+        const { data: profileRow, error: profileError } = await supabaseRef.current
           .from('profiles')
           .select('id, username')
           .eq('username', username)
@@ -154,18 +161,18 @@ export default function ProfilePage() {
           { count: followers, error: followersError },
           { count: following, error: followingError },
         ] = await Promise.all([
-          supabase
+          supabaseRef.current
             .from('feed_posts')
             .select(
               'id, content, image_url, created_at, user_id, username, like_count, comment_count'
             )
             .eq('user_id', targetUserId)
             .order('created_at', { ascending: false }),
-          supabase
+          supabaseRef.current
             .from('follows')
             .select('*', { count: 'exact', head: true })
             .eq('following_id', targetUserId),
-          supabase
+          supabaseRef.current
             .from('follows')
             .select('*', { count: 'exact', head: true })
             .eq('follower_id', targetUserId),
@@ -196,7 +203,7 @@ export default function ProfilePage() {
         setFollowingCount(following ?? 0)
 
         if (user?.id && user.id !== targetUserId) {
-          const { data: followRow, error: followError } = await supabase
+          const { data: followRow, error: followError } = await supabaseRef.current
             .from('follows')
             .select('follower_id, following_id')
             .eq('follower_id', user.id)
@@ -224,73 +231,55 @@ export default function ProfilePage() {
       }
     }
 
-    if (!username) {
-      setError('Missing username in route. Open profile by /profile/<username>.')
-      setLoading(false)
-      return
-    }
-
     void loadProfile()
 
     return () => {
       active = false
     }
-  }, [supabase, username])
+  }, [username])
 
   async function handleFollowToggle() {
+    if (followInProgressRef.current) return
     if (!currentUserId || !profileUserId || currentUserId === profileUserId) return
 
+    followInProgressRef.current = true
     setFollowLoading(true)
     setError('')
 
-    if (isFollowing) {
-      const { error } = await supabase
-        .from('follows')
-        .delete()
-        .eq('follower_id', currentUserId)
-        .eq('following_id', profileUserId)
+    try {
+      if (isFollowing) {
+        const { error } = await supabaseRef.current
+          .from('follows')
+          .delete()
+          .eq('follower_id', currentUserId)
+          .eq('following_id', profileUserId)
 
-      if (error) {
-        setError(error.message)
-        setFollowLoading(false)
+        if (error) {
+          setError(error.message)
+          return
+        }
+
+        setIsFollowing(false)
+        setFollowersCount((prev) => Math.max(prev - 1, 0))
         return
       }
 
-      setIsFollowing(false)
-      setFollowersCount((prev) => Math.max(prev - 1, 0))
-      setFollowLoading(false)
-      return
-    }
+      const { error } = await supabaseRef.current.from('follows').insert({
+        follower_id: currentUserId,
+        following_id: profileUserId,
+      })
 
-    const { error } = await supabase.from('follows').insert({
-      follower_id: currentUserId,
-      following_id: profileUserId,
-    })
-
-    if (error) {
-      setError(error.message)
-      setFollowLoading(false)
-      return
-    }
-
-    if (currentUserId !== profileUserId) {
-      const { error: notificationError } = await supabase
-        .from('notifications')
-        .insert({
-          user_id: profileUserId,
-          actor_id: currentUserId,
-          type: 'follow',
-          post_id: null,
-        })
-
-      if (notificationError) {
-        console.error('Follow notification failed:', notificationError)
+      if (error) {
+        setError(error.message)
+        return
       }
-    }
 
-    setIsFollowing(true)
-    setFollowersCount((prev) => prev + 1)
-    setFollowLoading(false)
+      setIsFollowing(true)
+      setFollowersCount((prev) => prev + 1)
+    } finally {
+      followInProgressRef.current = false
+      setFollowLoading(false)
+    }
   }
 
   async function handleDeletePost(postId: string) {
@@ -302,7 +291,7 @@ export default function ProfilePage() {
     setDeletingPostId(postId)
     setError('')
 
-    const { error } = await supabase
+    const { error } = await supabaseRef.current
       .from('posts')
       .delete()
       .eq('id', postId)
