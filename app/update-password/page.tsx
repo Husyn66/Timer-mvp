@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 
@@ -18,8 +18,13 @@ function parseHashParams(hash: string) {
 }
 
 export default function UpdatePasswordPage() {
-  const supabase = createClient();
+  const supabaseRef = useRef(createClient());
+  const supabase = supabaseRef.current;
+
   const router = useRouter();
+
+  const didInitRef = useRef(false);
+  const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -33,6 +38,9 @@ export default function UpdatePasswordPage() {
     let mounted = true;
 
     async function initRecoverySession() {
+      if (didInitRef.current) return;
+      didInitRef.current = true;
+
       setCheckingSession(true);
       setError('');
       setMessage('');
@@ -72,6 +80,9 @@ export default function UpdatePasswordPage() {
 
           setHasRecoverySession(true);
           setCheckingSession(false);
+
+          // Clean URL after successful recovery session init
+          window.history.replaceState({}, document.title, url.pathname);
           return;
         }
 
@@ -90,6 +101,9 @@ export default function UpdatePasswordPage() {
 
           setHasRecoverySession(true);
           setCheckingSession(false);
+
+          // Remove one-time code from URL after successful exchange
+          window.history.replaceState({}, document.title, url.pathname);
           return;
         }
 
@@ -109,7 +123,9 @@ export default function UpdatePasswordPage() {
         }
 
         if (!session) {
-          setError('Recovery session not found. Open the latest reset link from your email again.');
+          setError(
+            'Recovery session not found. Open the latest reset link from your email again.'
+          );
           setHasRecoverySession(false);
           setCheckingSession(false);
           return;
@@ -129,16 +145,25 @@ export default function UpdatePasswordPage() {
 
     return () => {
       mounted = false;
+
+      if (redirectTimeoutRef.current) {
+        clearTimeout(redirectTimeoutRef.current);
+      }
     };
-  }, [supabase]);
+  }, []);
 
   async function handleUpdatePassword(e: React.FormEvent) {
     e.preventDefault();
+
+    if (loading || checkingSession) return;
+
     setError('');
     setMessage('');
 
     if (!hasRecoverySession) {
-      setError('Auth session missing. Open the latest reset link from your email again.');
+      setError(
+        'Auth session missing. Open the latest reset link from your email again.'
+      );
       return;
     }
 
@@ -172,18 +197,22 @@ export default function UpdatePasswordPage() {
 
     setMessage('Password updated successfully. Redirecting to login...');
 
-    setTimeout(() => {
-      router.push('/login');
+    redirectTimeoutRef.current = setTimeout(() => {
+      router.replace('/login');
       router.refresh();
     }, 1200);
   }
+
+  const isFormDisabled = loading || checkingSession || !hasRecoverySession;
 
   return (
     <main className="mx-auto max-w-md p-6">
       <h1 className="mb-6 text-2xl font-bold">Update password</h1>
 
       {checkingSession ? (
-        <p className="mb-4 text-sm text-gray-400">Checking recovery session...</p>
+        <p className="mb-4 text-sm text-gray-400">
+          Checking recovery session...
+        </p>
       ) : null}
 
       <form onSubmit={handleUpdatePassword} className="space-y-4">
@@ -192,7 +221,9 @@ export default function UpdatePasswordPage() {
           placeholder="New password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="w-full rounded border px-3 py-2"
+          disabled={isFormDisabled}
+          className="w-full rounded border px-3 py-2 disabled:opacity-50"
+          autoComplete="new-password"
         />
 
         <input
@@ -200,7 +231,9 @@ export default function UpdatePasswordPage() {
           placeholder="Confirm new password"
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
-          className="w-full rounded border px-3 py-2"
+          disabled={isFormDisabled}
+          className="w-full rounded border px-3 py-2 disabled:opacity-50"
+          autoComplete="new-password"
         />
 
         {error ? <p className="text-sm text-red-600">{error}</p> : null}
@@ -208,7 +241,7 @@ export default function UpdatePasswordPage() {
 
         <button
           type="submit"
-          disabled={loading || checkingSession}
+          disabled={isFormDisabled}
           className="w-full rounded bg-black px-4 py-2 text-white disabled:opacity-50"
         >
           {loading ? 'Updating...' : 'Save new password'}

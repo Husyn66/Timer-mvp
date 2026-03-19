@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { fetchWithRetry } from '@/lib/supabase/fetchWithRetry'
+import { fetchWithRetry } from '@/lib/fetchWithRetry'
 
 type CommentRow = {
   id: string

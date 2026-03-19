@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { fetchWithRetry } from '@/lib/supabase/fetchWithRetry'
+import { fetchWithRetry } from '@/lib/fetchWithRetry'
 
 export default function PostLikeButton({
   postId,

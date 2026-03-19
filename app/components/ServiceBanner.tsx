@@ -20,7 +20,10 @@ export default function ServiceBanner({
     : 'Service is unstable right now. Please retry in a moment.';
 
   return (
-    <div className="w-full border-b border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200">
+    <div
+      role="status"
+      className="w-full border-b border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-200"
+    >
       {message}
     </div>
   );

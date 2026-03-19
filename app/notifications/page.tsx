@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 type NotificationRow = {
@@ -66,102 +66,14 @@ function formatNotificationText(type: string, actorUsername: string | null) {
 
 export default function NotificationsPage() {
   const router = useRouter()
-  const supabase = useMemo(() => createClient(), [])
+  const supabaseRef = useRef(createClient())
 
   const [items, setItems] = useState<NotificationRow[]>([])
   const [actorUsernames, setActorUsernames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [errorText, setErrorText] = useState<string | null>(null)
 
-  useEffect(() => {
-    let active = true
-
-    async function run() {
-      setLoading(true)
-      setErrorText(null)
-
-      try {
-        const {
-          data: { session },
-          error: authError,
-        } = await supabase.auth.getSession()
-
-        if (!active) return
-
-        if (authError) {
-          setErrorText(authError.message)
-          setLoading(false)
-          return
-        }
-
-        const user = session?.user ?? null
-
-        if (!user) {
-          router.replace('/login')
-          return
-        }
-
-        const { data, error } = await supabase
-          .from('notifications')
-          .select('id, user_id, actor_id, type, post_id, created_at')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false })
-
-        if (!active) return
-
-        if (error) {
-          setErrorText(error.message)
-          setLoading(false)
-          return
-        }
-
-        const rows = (data ?? []) as NotificationRow[]
-        setItems(rows)
-
-        const actorIds = Array.from(new Set(rows.map((row) => row.actor_id).filter(Boolean)))
-
-        if (actorIds.length > 0) {
-          const { data: profileRows, error: profileError } = await supabase
-            .from('profiles')
-            .select('id, username')
-            .in('id', actorIds)
-
-          if (!active) return
-
-          if (profileError) {
-            setErrorText(profileError.message)
-            setLoading(false)
-            return
-          }
-
-          const map: Record<string, string> = {}
-
-          ;((profileRows ?? []) as ProfileRow[]).forEach((row) => {
-            const cleaned = row.username?.trim() || ''
-            if (cleaned) {
-              map[row.id] = cleaned
-            }
-          })
-
-          setActorUsernames(map)
-        }
-
-        setLoading(false)
-      } catch (e: unknown) {
-        if (!active) return
-        setErrorText(e instanceof Error ? e.message : 'Failed to load notifications')
-        setLoading(false)
-      }
-    }
-
-    void run()
-
-    return () => {
-      active = false
-    }
-  }, [router, supabase])
-
-  const getHref = (item: NotificationRow) => {
+  function getHref(item: NotificationRow) {
     if ((item.type === 'like' || item.type === 'comment') && item.post_id) {
       return `/post/${item.post_id}`
     }
@@ -176,12 +88,112 @@ export default function NotificationsPage() {
     return null
   }
 
+  useEffect(() => {
+    let active = true
+
+    async function loadNotifications() {
+      setLoading(true)
+      setErrorText(null)
+      setItems([])
+      setActorUsernames({})
+
+      try {
+        const {
+          data: { session },
+          error: authError,
+        } = await supabaseRef.current.auth.getSession()
+
+        if (!active) return
+
+        if (authError) {
+          setErrorText(authError.message)
+          setLoading(false)
+          return
+        }
+
+        const user = session?.user ?? null
+
+        if (!user) {
+          setLoading(false)
+          router.replace('/login')
+          return
+        }
+
+        const { data: notificationRows, error: notificationsError } =
+          await supabaseRef.current
+            .from('notifications')
+            .select('id, user_id, actor_id, type, post_id, created_at')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(30)
+
+        if (!active) return
+
+        if (notificationsError) {
+          setErrorText(notificationsError.message)
+          setLoading(false)
+          return
+        }
+
+        const rows = (notificationRows ?? []) as NotificationRow[]
+        setItems(rows)
+
+        const actorIds = Array.from(
+          new Set(rows.map((row) => row.actor_id).filter(Boolean))
+        )
+
+        if (actorIds.length === 0) {
+          setLoading(false)
+          return
+        }
+
+        const { data: profileRows, error: profilesError } =
+          await supabaseRef.current
+            .from('profiles')
+            .select('id, username')
+            .in('id', actorIds)
+
+        if (!active) return
+
+        if (profilesError) {
+          setErrorText(profilesError.message)
+          setLoading(false)
+          return
+        }
+
+        const usernameMap: Record<string, string> = {}
+
+        ;((profileRows ?? []) as ProfileRow[]).forEach((row) => {
+          const username = row.username?.trim() || ''
+          if (username) {
+            usernameMap[row.id] = username
+          }
+        })
+
+        setActorUsernames(usernameMap)
+        setLoading(false)
+      } catch (error: unknown) {
+        if (!active) return
+        setErrorText(
+          error instanceof Error ? error.message : 'Failed to load notifications'
+        )
+        setLoading(false)
+      }
+    }
+
+    void loadNotifications()
+
+    return () => {
+      active = false
+    }
+  }, [])
+
   return (
-    <main className="max-w-2xl mx-auto px-4 py-6 space-y-5 text-white">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+    <main className="mx-auto max-w-2xl space-y-5 px-4 py-6 text-white">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
 
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => router.push('/feed')}
             className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
@@ -226,7 +238,7 @@ export default function NotificationsPage() {
 
             const cardContent = (
               <>
-                <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div
                     className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${typeStyle.badge}`}
                   >
@@ -238,7 +250,9 @@ export default function NotificationsPage() {
                   </div>
                 </div>
 
-                <div className="mt-4 text-sm text-gray-100 leading-6">{message}</div>
+                <div className="mt-4 text-sm leading-6 text-gray-100">
+                  {message}
+                </div>
 
                 {actorUsername && (
                   <div className="mt-3 text-sm text-gray-300">
