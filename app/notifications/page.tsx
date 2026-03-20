@@ -1,17 +1,20 @@
 'use client'
 
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+
+type NotificationType = string
 
 type NotificationRow = {
   id: string
   user_id: string
   actor_id: string
-  type: string
+  type: NotificationType
   post_id: string | null
   created_at: string
+  read_at: string | null
+  is_read: boolean
 }
 
 type ProfileRow = {
@@ -31,6 +34,8 @@ function getTypeClasses(type: string) {
     return {
       badge: 'bg-pink-500/15 text-pink-300 border-pink-400/20',
       glow: 'hover:border-pink-400/30',
+      unreadRing: 'ring-1 ring-pink-400/20',
+      unreadBg: 'bg-[rgba(40,16,28,0.72)]',
     }
   }
 
@@ -38,6 +43,8 @@ function getTypeClasses(type: string) {
     return {
       badge: 'bg-blue-500/15 text-blue-300 border-blue-400/20',
       glow: 'hover:border-blue-400/30',
+      unreadRing: 'ring-1 ring-blue-400/20',
+      unreadBg: 'bg-[rgba(15,28,46,0.78)]',
     }
   }
 
@@ -45,63 +52,89 @@ function getTypeClasses(type: string) {
     return {
       badge: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/20',
       glow: 'hover:border-emerald-400/30',
+      unreadRing: 'ring-1 ring-emerald-400/20',
+      unreadBg: 'bg-[rgba(16,34,29,0.76)]',
     }
   }
 
   return {
     badge: 'bg-white/10 text-gray-200 border-white/10',
     glow: 'hover:border-white/20',
+    unreadRing: 'ring-1 ring-white/10',
+    unreadBg: 'bg-[rgba(24,24,27,0.82)]',
   }
 }
 
-function formatNotificationText(type: string, actorUsername: string | null) {
-  const actor = actorUsername ? `@${actorUsername}` : 'Someone'
+function formatAbsolute(dateString: string) {
+  return new Date(dateString).toLocaleString()
+}
 
-  if (type === 'like') return `${actor} liked your post.`
-  if (type === 'comment') return `${actor} commented on your post.`
-  if (type === 'follow') return `${actor} started following you.`
+function formatRelative(dateString: string) {
+  const date = new Date(dateString)
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
 
-  return `${actor} sent you a notification.`
+  if (seconds < 60) return 'just now'
+
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d ago`
+
+  return date.toLocaleDateString()
+}
+
+function getActionText(type: string) {
+  if (type === 'like') return 'liked your post'
+  if (type === 'comment') return 'commented on your post'
+  if (type === 'follow') return 'started following you'
+  return 'interacted with you'
+}
+
+function getInitial(username: string | null | undefined) {
+  const cleaned = username?.trim() || ''
+  return cleaned ? cleaned.charAt(0).toUpperCase() : 'U'
 }
 
 export default function NotificationsPage() {
-  const router = useRouter()
-  const supabaseRef = useRef(createClient())
+  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null)
+  if (!supabaseRef.current) {
+    supabaseRef.current = createClient()
+  }
+
+  const markReadStartedRef = useRef(false)
 
   const [items, setItems] = useState<NotificationRow[]>([])
-  const [actorUsernames, setActorUsernames] = useState<Record<string, string>>({})
+  const [profilesMap, setProfilesMap] = useState<Record<string, ProfileRow>>({})
   const [loading, setLoading] = useState(true)
   const [errorText, setErrorText] = useState<string | null>(null)
-
-  function getHref(item: NotificationRow) {
-    if ((item.type === 'like' || item.type === 'comment') && item.post_id) {
-      return `/post/${item.post_id}`
-    }
-
-    if (item.type === 'follow') {
-      const username = actorUsernames[item.actor_id]?.trim() || ''
-      if (username) {
-        return `/profile/${encodeURIComponent(username)}`
-      }
-    }
-
-    return null
-  }
+  const [markingRead, setMarkingRead] = useState(false)
 
   useEffect(() => {
     let active = true
 
-    async function loadNotifications() {
+    async function run() {
       setLoading(true)
       setErrorText(null)
-      setItems([])
-      setActorUsernames({})
 
       try {
+        const supabase = supabaseRef.current
+
+        if (!supabase) {
+          if (active) {
+            setErrorText('Supabase client is not available.')
+            setLoading(false)
+          }
+          return
+        }
+
         const {
-          data: { session },
+          data: { user },
           error: authError,
-        } = await supabaseRef.current.auth.getSession()
+        } = await supabase.auth.getUser()
 
         if (!active) return
 
@@ -111,108 +144,141 @@ export default function NotificationsPage() {
           return
         }
 
-        const user = session?.user ?? null
-
         if (!user) {
+          setItems([])
+          setProfilesMap({})
           setLoading(false)
-          router.replace('/login')
           return
         }
 
-        const { data: notificationRows, error: notificationsError } =
-          await supabaseRef.current
-            .from('notifications')
-            .select('id, user_id, actor_id, type, post_id, created_at')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: false })
-            .limit(30)
+        const { data, error } = await supabase
+          .from('notifications')
+          .select('id, user_id, actor_id, type, post_id, created_at, read_at, is_read')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(30)
 
         if (!active) return
 
-        if (notificationsError) {
-          setErrorText(notificationsError.message)
+        if (error) {
+          setErrorText(error.message)
           setLoading(false)
           return
         }
 
-        const rows = (notificationRows ?? []) as NotificationRow[]
-        setItems(rows)
+        const rows = (data ?? []) as NotificationRow[]
 
         const actorIds = Array.from(
           new Set(rows.map((row) => row.actor_id).filter(Boolean))
-        )
+        ) as string[]
 
-        if (actorIds.length === 0) {
-          setLoading(false)
-          return
-        }
+        let nextProfilesMap: Record<string, ProfileRow> = {}
 
-        const { data: profileRows, error: profilesError } =
-          await supabaseRef.current
+        if (actorIds.length > 0) {
+          const { data: profileRows, error: profileError } = await supabase
             .from('profiles')
             .select('id, username')
             .in('id', actorIds)
 
-        if (!active) return
+          if (!active) return
 
-        if (profilesError) {
-          setErrorText(profilesError.message)
-          setLoading(false)
-          return
+          if (profileError) {
+            setErrorText(profileError.message)
+            setLoading(false)
+            return
+          }
+
+          for (const row of (profileRows ?? []) as ProfileRow[]) {
+            nextProfilesMap[row.id] = row
+          }
         }
 
-        const usernameMap: Record<string, string> = {}
+        setProfilesMap(nextProfilesMap)
+        setItems(rows)
 
-        ;((profileRows ?? []) as ProfileRow[]).forEach((row) => {
-          const username = row.username?.trim() || ''
-          if (username) {
-            usernameMap[row.id] = username
+        const unreadIds = rows.filter((row) => !row.is_read).map((row) => row.id)
+
+        if (unreadIds.length > 0 && !markReadStartedRef.current) {
+          markReadStartedRef.current = true
+          setMarkingRead(true)
+
+          const now = new Date().toISOString()
+
+          const { error: updateError } = await supabase
+            .from('notifications')
+            .update({
+              is_read: true,
+              read_at: now,
+            })
+            .eq('user_id', user.id)
+            .in('id', unreadIds)
+            .eq('is_read', false)
+
+          if (!active) return
+
+          if (!updateError) {
+            setItems((prev) =>
+              prev.map((item) =>
+                unreadIds.includes(item.id)
+                  ? {
+                      ...item,
+                      is_read: true,
+                      read_at: now,
+                    }
+                  : item
+              )
+            )
           }
-        })
 
-        setActorUsernames(usernameMap)
+          setMarkingRead(false)
+        } else {
+          setMarkingRead(false)
+        }
+
         setLoading(false)
-      } catch (error: unknown) {
+      } catch (e: unknown) {
         if (!active) return
-        setErrorText(
-          error instanceof Error ? error.message : 'Failed to load notifications'
-        )
+        setErrorText(e instanceof Error ? e.message : 'Failed to load notifications')
         setLoading(false)
       }
     }
 
-    void loadNotifications()
+    void run()
 
     return () => {
       active = false
     }
   }, [])
 
+  const getHref = (item: NotificationRow) => {
+    if ((item.type === 'like' || item.type === 'comment') && item.post_id) {
+      return `/post/${item.post_id}`
+    }
+
+    if (item.type === 'follow') {
+      const username = profilesMap[item.actor_id]?.username?.trim() || ''
+      if (username) {
+        return `/profile/${encodeURIComponent(username)}`
+      }
+    }
+
+    return null
+  }
+
   return (
-    <main className="mx-auto max-w-2xl space-y-5 px-4 py-6 text-white">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="mx-auto max-w-2xl px-4 py-6 space-y-5 text-white">
+      <div className="flex items-center justify-between gap-3">
         <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => router.push('/feed')}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-          >
-            ← Feed
-          </button>
-
-          <button
-            onClick={() => router.push('/')}
-            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-          >
-            Home
-          </button>
-        </div>
+        {markingRead ? (
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-gray-300">
+            Marking as read...
+          </div>
+        ) : null}
       </div>
 
       {loading && (
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-gray-200">
-          Loading notifications...
+          Loading...
         </div>
       )}
 
@@ -233,35 +299,63 @@ export default function NotificationsPage() {
           {items.map((item) => {
             const typeStyle = getTypeClasses(item.type)
             const href = getHref(item)
-            const actorUsername = actorUsernames[item.actor_id] || null
-            const message = formatNotificationText(item.type, actorUsername)
+            const actor = profilesMap[item.actor_id]
+            const actorUsername = actor?.username?.trim() || ''
+            const actorLabel = actorUsername ? `@${actorUsername}` : item.actor_id
 
             const cardContent = (
               <>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div
-                    className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${typeStyle.badge}`}
-                  >
-                    {getTypeLabel(item.type)}
+                <div className="flex items-start justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="shrink-0">
+                      <div className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/10 text-sm font-semibold text-white">
+                        {getInitial(actorUsername)}
+                      </div>
+                    </div>
+
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div
+                          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${typeStyle.badge}`}
+                        >
+                          {getTypeLabel(item.type)}
+                        </div>
+
+                        {!item.is_read ? (
+                          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-sky-400" />
+                        ) : null}
+                      </div>
+
+                      <div className="mt-2 text-sm text-gray-100 break-words">
+                        <span className="font-semibold">{actorLabel}</span>{' '}
+                        <span className="text-gray-300">{getActionText(item.type)}</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="text-xs text-gray-400">
-                    {new Date(item.created_at).toLocaleString()}
+                  <div className="text-xs text-gray-400 shrink-0">
+                    {formatRelative(item.created_at)}
                   </div>
                 </div>
 
-                <div className="mt-4 text-sm leading-6 text-gray-100">
-                  {message}
-                </div>
+                <div className="mt-4 space-y-2 text-sm text-gray-200">
+                  <div>
+                    <span className="text-gray-400">Actor:</span>{' '}
+                    <span className="font-medium break-all">{actorLabel}</span>
+                  </div>
 
-                {actorUsername && (
-                  <div className="mt-3 text-sm text-gray-300">
-                    Actor:{' '}
-                    <span className="font-semibold text-sky-300">
-                      @{actorUsername}
+                  <div>
+                    <span className="text-gray-400">Post:</span>{' '}
+                    <span className="font-medium break-all">{item.post_id ?? '—'}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-gray-400">Date:</span>{' '}
+                    <span className="font-medium break-all">
+                      {formatAbsolute(item.created_at)}
                     </span>
                   </div>
-                )}
+                </div>
 
                 {href && (
                   <div className="mt-4 text-sm font-medium text-sky-300">
@@ -271,29 +365,30 @@ export default function NotificationsPage() {
               </>
             )
 
+            const cardClassName = [
+              'block rounded-2xl border border-white/10 p-4 shadow-[0_10px_24px_rgba(0,0,0,0.18)] transition duration-150',
+              item.is_read
+                ? 'bg-[rgba(17,24,39,0.82)] hover:bg-[rgba(30,41,59,0.92)]'
+                : `${typeStyle.unreadBg} ${typeStyle.unreadRing} hover:bg-[rgba(30,41,59,0.92)]`,
+              typeStyle.glow,
+            ].join(' ')
+
             if (href) {
               return (
-                <Link
-                  key={item.id}
-                  href={href}
-                  className={`block rounded-2xl border border-white/10 bg-[rgba(17,24,39,0.82)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.18)] transition duration-150 hover:bg-[rgba(30,41,59,0.92)] hover:no-underline ${typeStyle.glow}`}
-                >
+                <Link key={item.id} href={href} className={cardClassName}>
                   {cardContent}
                 </Link>
               )
             }
 
             return (
-              <div
-                key={item.id}
-                className={`rounded-2xl border border-white/10 bg-[rgba(17,24,39,0.82)] p-4 shadow-[0_10px_24px_rgba(0,0,0,0.18)] transition duration-150 ${typeStyle.glow}`}
-              >
+              <div key={item.id} className={cardClassName}>
                 {cardContent}
               </div>
             )
           })}
         </div>
       )}
-    </main>
+    </div>
   )
 }
