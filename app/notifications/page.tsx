@@ -1,20 +1,19 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-
-type NotificationType = string
 
 type NotificationRow = {
   id: string
   user_id: string
   actor_id: string
-  type: NotificationType
+  type: string
   post_id: string | null
   created_at: string
-  read_at: string | null
   is_read: boolean
+  read_at: string | null
 }
 
 type ProfileRow = {
@@ -34,8 +33,6 @@ function getTypeClasses(type: string) {
     return {
       badge: 'bg-pink-500/15 text-pink-300 border-pink-400/20',
       glow: 'hover:border-pink-400/30',
-      unreadRing: 'ring-1 ring-pink-400/20',
-      unreadBg: 'bg-[rgba(40,16,28,0.72)]',
     }
   }
 
@@ -43,8 +40,6 @@ function getTypeClasses(type: string) {
     return {
       badge: 'bg-blue-500/15 text-blue-300 border-blue-400/20',
       glow: 'hover:border-blue-400/30',
-      unreadRing: 'ring-1 ring-blue-400/20',
-      unreadBg: 'bg-[rgba(15,28,46,0.78)]',
     }
   }
 
@@ -52,89 +47,181 @@ function getTypeClasses(type: string) {
     return {
       badge: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/20',
       glow: 'hover:border-emerald-400/30',
-      unreadRing: 'ring-1 ring-emerald-400/20',
-      unreadBg: 'bg-[rgba(16,34,29,0.76)]',
     }
   }
 
   return {
     badge: 'bg-white/10 text-gray-200 border-white/10',
     glow: 'hover:border-white/20',
-    unreadRing: 'ring-1 ring-white/10',
-    unreadBg: 'bg-[rgba(24,24,27,0.82)]',
   }
 }
 
-function formatAbsolute(dateString: string) {
-  return new Date(dateString).toLocaleString()
-}
+function formatNotificationText(type: string, actorUsername: string | null) {
+  const actor = actorUsername ? `@${actorUsername}` : 'Someone'
 
-function formatRelative(dateString: string) {
-  const date = new Date(dateString)
-  const seconds = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (type === 'like') return `${actor} liked your post.`
+  if (type === 'comment') return `${actor} commented on your post.`
+  if (type === 'follow') return `${actor} started following you.`
 
-  if (seconds < 60) return 'just now'
-
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-
-  const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d ago`
-
-  return date.toLocaleDateString()
-}
-
-function getActionText(type: string) {
-  if (type === 'like') return 'liked your post'
-  if (type === 'comment') return 'commented on your post'
-  if (type === 'follow') return 'started following you'
-  return 'interacted with you'
-}
-
-function getInitial(username: string | null | undefined) {
-  const cleaned = username?.trim() || ''
-  return cleaned ? cleaned.charAt(0).toUpperCase() : 'U'
+  return `${actor} sent you a notification.`
 }
 
 export default function NotificationsPage() {
-  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null)
-  if (!supabaseRef.current) {
-    supabaseRef.current = createClient()
-  }
-
-  const markReadStartedRef = useRef(false)
+  const router = useRouter()
+  const supabaseRef = useRef(createClient())
 
   const [items, setItems] = useState<NotificationRow[]>([])
-  const [profilesMap, setProfilesMap] = useState<Record<string, ProfileRow>>({})
+  const [actorUsernames, setActorUsernames] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [errorText, setErrorText] = useState<string | null>(null)
-  const [markingRead, setMarkingRead] = useState(false)
+  const [markingAll, setMarkingAll] = useState(false)
+  const [markingIds, setMarkingIds] = useState<Record<string, boolean>>({})
+
+  const unreadCount = useMemo(
+    () => items.filter((item) => !item.is_read).length,
+    [items]
+  )
+
+  function getHref(item: NotificationRow) {
+    if ((item.type === 'like' || item.type === 'comment') && item.post_id) {
+      return `/post/${item.post_id}`
+    }
+
+    if (item.type === 'follow') {
+      const username = actorUsernames[item.actor_id]?.trim() || ''
+      if (username) {
+        return `/profile/${encodeURIComponent(username)}`
+      }
+    }
+
+    return null
+  }
+
+  async function markAllAsRead() {
+    if (markingAll || unreadCount === 0) return
+
+    const unreadIds = items.filter((item) => !item.is_read).map((item) => item.id)
+    if (unreadIds.length === 0) return
+
+    setMarkingAll(true)
+    setErrorText(null)
+
+    try {
+      const res = await fetch('/api/notifications/read', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ all: true }),
+      })
+
+      const json = await res.json().catch(() => null)
+
+      console.log('[notifications/page] markAllAsRead response', {
+        status: res.status,
+        ok: res.ok,
+        json,
+      })
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Failed to mark all as read')
+      }
+
+      const readAt =
+        typeof json?.readAt === 'string' ? json.readAt : new Date().toISOString()
+
+      setItems((prev) =>
+        prev.map((item) =>
+          item.is_read
+            ? item
+            : {
+                ...item,
+                is_read: true,
+                read_at: readAt,
+              }
+        )
+      )
+    } catch (error) {
+      setErrorText(
+        error instanceof Error ? error.message : 'Failed to mark all as read'
+      )
+    } finally {
+      setMarkingAll(false)
+    }
+  }
+
+  async function markOneAsRead(id: string) {
+    const target = items.find((item) => item.id === id)
+    if (!target || target.is_read || markingIds[id]) return
+
+    setMarkingIds((prev) => ({ ...prev, [id]: true }))
+    setErrorText(null)
+
+    try {
+      const res = await fetch('/api/notifications/read', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ids: [id] }),
+      })
+
+      const json = await res.json().catch(() => null)
+
+      console.log('[notifications/page] markOneAsRead response', {
+        id,
+        status: res.status,
+        ok: res.ok,
+        json,
+      })
+
+      if (!res.ok || !json?.ok) {
+        throw new Error(json?.error || 'Failed to mark notification as read')
+      }
+
+      const readAt =
+        typeof json?.readAt === 'string' ? json.readAt : new Date().toISOString()
+
+      setItems((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                is_read: true,
+                read_at: readAt,
+              }
+            : item
+        )
+      )
+    } catch (error) {
+      setErrorText(
+        error instanceof Error
+          ? error.message
+          : 'Failed to mark notification as read'
+      )
+    } finally {
+      setMarkingIds((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
+    }
+  }
 
   useEffect(() => {
     let active = true
 
-    async function run() {
+    async function loadNotifications() {
       setLoading(true)
       setErrorText(null)
+      setItems([])
+      setActorUsernames({})
 
       try {
-        const supabase = supabaseRef.current
-
-        if (!supabase) {
-          if (active) {
-            setErrorText('Supabase client is not available.')
-            setLoading(false)
-          }
-          return
-        }
-
         const {
-          data: { user },
+          data: { session },
           error: authError,
-        } = await supabase.auth.getUser()
+        } = await supabaseRef.current.auth.getSession()
 
         if (!active) return
 
@@ -144,141 +231,128 @@ export default function NotificationsPage() {
           return
         }
 
+        const user = session?.user ?? null
+
         if (!user) {
-          setItems([])
-          setProfilesMap({})
           setLoading(false)
+          router.replace('/login')
           return
         }
 
-        const { data, error } = await supabase
-          .from('notifications')
-          .select('id, user_id, actor_id, type, post_id, created_at, read_at, is_read')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false })
-          .limit(30)
+        const { data: notificationRows, error: notificationsError } =
+          await supabaseRef.current
+            .from('notifications')
+            .select(
+              'id, user_id, actor_id, type, post_id, created_at, is_read, read_at'
+            )
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(30)
 
         if (!active) return
 
-        if (error) {
-          setErrorText(error.message)
+        if (notificationsError) {
+          setErrorText(notificationsError.message)
           setLoading(false)
           return
         }
 
-        const rows = (data ?? []) as NotificationRow[]
+        const rows = (notificationRows ?? []) as NotificationRow[]
+        setItems(rows)
 
         const actorIds = Array.from(
           new Set(rows.map((row) => row.actor_id).filter(Boolean))
-        ) as string[]
+        )
 
-        let nextProfilesMap: Record<string, ProfileRow> = {}
+        if (actorIds.length === 0) {
+          setLoading(false)
+          return
+        }
 
-        if (actorIds.length > 0) {
-          const { data: profileRows, error: profileError } = await supabase
+        const { data: profileRows, error: profilesError } =
+          await supabaseRef.current
             .from('profiles')
             .select('id, username')
             .in('id', actorIds)
 
-          if (!active) return
-
-          if (profileError) {
-            setErrorText(profileError.message)
-            setLoading(false)
-            return
-          }
-
-          for (const row of (profileRows ?? []) as ProfileRow[]) {
-            nextProfilesMap[row.id] = row
-          }
-        }
-
-        setProfilesMap(nextProfilesMap)
-        setItems(rows)
-
-        const unreadIds = rows.filter((row) => !row.is_read).map((row) => row.id)
-
-        if (unreadIds.length > 0 && !markReadStartedRef.current) {
-          markReadStartedRef.current = true
-          setMarkingRead(true)
-
-          const now = new Date().toISOString()
-
-          const { error: updateError } = await supabase
-            .from('notifications')
-            .update({
-              is_read: true,
-              read_at: now,
-            })
-            .eq('user_id', user.id)
-            .in('id', unreadIds)
-            .eq('is_read', false)
-
-          if (!active) return
-
-          if (!updateError) {
-            setItems((prev) =>
-              prev.map((item) =>
-                unreadIds.includes(item.id)
-                  ? {
-                      ...item,
-                      is_read: true,
-                      read_at: now,
-                    }
-                  : item
-              )
-            )
-          }
-
-          setMarkingRead(false)
-        } else {
-          setMarkingRead(false)
-        }
-
-        setLoading(false)
-      } catch (e: unknown) {
         if (!active) return
-        setErrorText(e instanceof Error ? e.message : 'Failed to load notifications')
+
+        if (profilesError) {
+          setErrorText(profilesError.message)
+          setLoading(false)
+          return
+        }
+
+        const usernameMap: Record<string, string> = {}
+
+        ;((profileRows ?? []) as ProfileRow[]).forEach((row) => {
+          const username = row.username?.trim() || ''
+          if (username) {
+            usernameMap[row.id] = username
+          }
+        })
+
+        setActorUsernames(usernameMap)
+        setLoading(false)
+      } catch (error: unknown) {
+        if (!active) return
+        setErrorText(
+          error instanceof Error ? error.message : 'Failed to load notifications'
+        )
         setLoading(false)
       }
     }
 
-    void run()
+    void loadNotifications()
 
     return () => {
       active = false
     }
-  }, [])
-
-  const getHref = (item: NotificationRow) => {
-    if ((item.type === 'like' || item.type === 'comment') && item.post_id) {
-      return `/post/${item.post_id}`
-    }
-
-    if (item.type === 'follow') {
-      const username = profilesMap[item.actor_id]?.username?.trim() || ''
-      if (username) {
-        return `/profile/${encodeURIComponent(username)}`
-      }
-    }
-
-    return null
-  }
+  }, [router])
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-6 space-y-5 text-white">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
-        {markingRead ? (
-          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-gray-300">
-            Marking as read...
-          </div>
-        ) : null}
+    <main className="mx-auto max-w-2xl space-y-5 px-4 py-6 text-white">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="space-y-1">
+          <h1 className="text-3xl font-bold tracking-tight">Notifications</h1>
+          {!loading && !errorText && (
+            <p className="text-sm text-gray-400">
+              Unread: <span className="font-semibold text-white">{unreadCount}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={markAllAsRead}
+            disabled={loading || markingAll || unreadCount === 0}
+            className="rounded-xl border border-sky-400/20 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {markingAll ? 'Marking...' : 'Mark all as read'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => router.push('/feed')}
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+          >
+            ← Feed
+          </button>
+
+          <button
+            type="button"
+            onClick={() => router.push('/')}
+            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+          >
+            Home
+          </button>
+        </div>
       </div>
 
       {loading && (
         <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-gray-200">
-          Loading...
+          Loading notifications...
         </div>
       )}
 
@@ -299,63 +373,61 @@ export default function NotificationsPage() {
           {items.map((item) => {
             const typeStyle = getTypeClasses(item.type)
             const href = getHref(item)
-            const actor = profilesMap[item.actor_id]
-            const actorUsername = actor?.username?.trim() || ''
-            const actorLabel = actorUsername ? `@${actorUsername}` : item.actor_id
+            const actorUsername = actorUsernames[item.actor_id] || null
+            const message = formatNotificationText(item.type, actorUsername)
+            const isMarkingThis = !!markingIds[item.id]
 
             const cardContent = (
               <>
-                <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="shrink-0">
-                      <div className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/10 text-sm font-semibold text-white">
-                        {getInitial(actorUsername)}
-                      </div>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div
+                      className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${typeStyle.badge}`}
+                    >
+                      {getTypeLabel(item.type)}
                     </div>
 
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <div
-                          className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${typeStyle.badge}`}
-                        >
-                          {getTypeLabel(item.type)}
-                        </div>
-
-                        {!item.is_read ? (
-                          <span className="inline-flex h-2.5 w-2.5 rounded-full bg-sky-400" />
-                        ) : null}
+                    {!item.is_read && (
+                      <div className="inline-flex items-center rounded-full border border-amber-400/20 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold text-amber-200">
+                        Unread
                       </div>
-
-                      <div className="mt-2 text-sm text-gray-100 break-words">
-                        <span className="font-semibold">{actorLabel}</span>{' '}
-                        <span className="text-gray-300">{getActionText(item.type)}</span>
-                      </div>
-                    </div>
+                    )}
                   </div>
 
-                  <div className="text-xs text-gray-400 shrink-0">
-                    {formatRelative(item.created_at)}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-xs text-gray-400">
+                      {new Date(item.created_at).toLocaleString()}
+                    </div>
+
+                    {!item.is_read && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          void markOneAsRead(item.id)
+                        }}
+                        disabled={isMarkingThis}
+                        className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {isMarkingThis ? 'Marking...' : 'Mark as read'}
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                <div className="mt-4 space-y-2 text-sm text-gray-200">
-                  <div>
-                    <span className="text-gray-400">Actor:</span>{' '}
-                    <span className="font-medium break-all">{actorLabel}</span>
-                  </div>
+                <div className="mt-4 text-sm leading-6 text-gray-100">
+                  {message}
+                </div>
 
-                  <div>
-                    <span className="text-gray-400">Post:</span>{' '}
-                    <span className="font-medium break-all">{item.post_id ?? '—'}</span>
-                  </div>
-
-                  <div>
-                    <span className="text-gray-400">Date:</span>{' '}
-                    <span className="font-medium break-all">
-                      {formatAbsolute(item.created_at)}
+                {actorUsername && (
+                  <div className="mt-3 text-sm text-gray-300">
+                    Actor:{' '}
+                    <span className="font-semibold text-sky-300">
+                      @{actorUsername}
                     </span>
                   </div>
-                </div>
+                )}
 
                 {href && (
                   <div className="mt-4 text-sm font-medium text-sky-300">
@@ -365,30 +437,32 @@ export default function NotificationsPage() {
               </>
             )
 
-            const cardClassName = [
-              'block rounded-2xl border border-white/10 p-4 shadow-[0_10px_24px_rgba(0,0,0,0.18)] transition duration-150',
+            const baseClassName = `rounded-2xl border p-4 shadow-[0_10px_24px_rgba(0,0,0,0.18)] transition duration-150 ${
               item.is_read
-                ? 'bg-[rgba(17,24,39,0.82)] hover:bg-[rgba(30,41,59,0.92)]'
-                : `${typeStyle.unreadBg} ${typeStyle.unreadRing} hover:bg-[rgba(30,41,59,0.92)]`,
-              typeStyle.glow,
-            ].join(' ')
+                ? 'border-white/10 bg-[rgba(17,24,39,0.62)] opacity-80'
+                : `border-sky-400/20 bg-[rgba(17,24,39,0.88)] ${typeStyle.glow}`
+            }`
 
             if (href) {
               return (
-                <Link key={item.id} href={href} className={cardClassName}>
+                <Link
+                  key={item.id}
+                  href={href}
+                  className={`block hover:no-underline ${baseClassName}`}
+                >
                   {cardContent}
                 </Link>
               )
             }
 
             return (
-              <div key={item.id} className={cardClassName}>
+              <div key={item.id} className={baseClassName}>
                 {cardContent}
               </div>
             )
           })}
         </div>
       )}
-    </div>
+    </main>
   )
 }
