@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -87,7 +87,7 @@ function formatDate(value: string): string {
 export default function PostDetailPage() {
   const params = useParams<{ id: string }>()
   const router = useRouter()
-  const supabase = useMemo(() => createClient(), [])
+  const supabaseRef = useRef(createClient())
 
   const rawPostId = params?.id ?? ''
   const postId = decodeURIComponent(rawPostId)
@@ -106,6 +106,8 @@ export default function PostDetailPage() {
     let active = true
 
     async function loadPage() {
+      const supabase = supabaseRef.current
+
       setLoading(true)
       setError('')
       setPost(null)
@@ -212,9 +214,10 @@ export default function PostDetailPage() {
     return () => {
       active = false
     }
-  }, [postId, supabase])
+  }, [postId])
 
   async function handleAddComment() {
+    const supabase = supabaseRef.current
     const content = commentText.trim()
 
     if (!currentUserId) {
@@ -258,14 +261,6 @@ export default function PostDetailPage() {
 
       setComments((prev) => [...prev, typedInserted])
       setCommentText('')
-      setPost((prev) =>
-        prev
-          ? {
-              ...prev,
-              comment_count: (prev.comment_count ?? 0) + 1,
-            }
-          : prev
-      )
 
       if (!commentAuthors[currentUserId]) {
         const { data: myProfile } = await supabase
@@ -280,6 +275,18 @@ export default function PostDetailPage() {
           ...prev,
           [currentUserId]: typedProfile?.username?.trim() || 'unknown',
         }))
+      }
+
+      const { data: refreshedPost } = await supabase
+        .from('feed_posts')
+        .select(
+          'id, user_id, username, content, image_url, created_at, like_count, comment_count'
+        )
+        .eq('id', post.id)
+        .maybeSingle()
+
+      if (refreshedPost) {
+        setPost(refreshedPost as PostRow)
       }
 
       if (post.user_id !== currentUserId) {

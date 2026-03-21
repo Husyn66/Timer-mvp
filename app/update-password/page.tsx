@@ -19,11 +19,8 @@ function parseHashParams(hash: string) {
 
 export default function UpdatePasswordPage() {
   const supabaseRef = useRef(createClient());
-  const supabase = supabaseRef.current;
-
   const router = useRouter();
 
-  const didInitRef = useRef(false);
   const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [password, setPassword] = useState('');
@@ -35,15 +32,17 @@ export default function UpdatePasswordPage() {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
 
     async function initRecoverySession() {
-      if (didInitRef.current) return;
-      didInitRef.current = true;
+      const supabase = supabaseRef.current;
+
+      if (cancelled) return;
 
       setCheckingSession(true);
       setError('');
       setMessage('');
+      setHasRecoverySession(false);
 
       try {
         const url = new URL(window.location.href);
@@ -51,14 +50,13 @@ export default function UpdatePasswordPage() {
         const code = url.searchParams.get('code');
 
         if (hashData.error_description) {
-          if (!mounted) return;
+          if (cancelled) return;
           setError(hashData.error_description);
-          setHasRecoverySession(false);
           setCheckingSession(false);
           return;
         }
 
-        // Case 1: tokens are in URL hash
+        // Case 1: recovery tokens are in URL hash
         if (
           hashData.type === 'recovery' &&
           hashData.access_token &&
@@ -69,11 +67,10 @@ export default function UpdatePasswordPage() {
             refresh_token: hashData.refresh_token,
           });
 
-          if (!mounted) return;
+          if (cancelled) return;
 
           if (error) {
             setError(error.message);
-            setHasRecoverySession(false);
             setCheckingSession(false);
             return;
           }
@@ -81,20 +78,18 @@ export default function UpdatePasswordPage() {
           setHasRecoverySession(true);
           setCheckingSession(false);
 
-          // Clean URL after successful recovery session init
           window.history.replaceState({}, document.title, url.pathname);
           return;
         }
 
-        // Case 2: auth code is in query string
+        // Case 2: one-time auth code is in query string
         if (code) {
           const { error } = await supabase.auth.exchangeCodeForSession(code);
 
-          if (!mounted) return;
+          if (cancelled) return;
 
           if (error) {
             setError(error.message);
-            setHasRecoverySession(false);
             setCheckingSession(false);
             return;
           }
@@ -102,41 +97,23 @@ export default function UpdatePasswordPage() {
           setHasRecoverySession(true);
           setCheckingSession(false);
 
-          // Remove one-time code from URL after successful exchange
-          window.history.replaceState({}, document.title, url.pathname);
+          url.searchParams.delete('code');
+          const cleanSearch = url.searchParams.toString();
+          const cleanUrl = cleanSearch ? `${url.pathname}?${cleanSearch}` : url.pathname;
+          window.history.replaceState({}, document.title, cleanUrl);
           return;
         }
 
-        // Case 3: maybe session is already present
-        const {
-          data: { session },
-          error,
-        } = await supabase.auth.getSession();
+        // Do not treat an ordinary existing session as a recovery session.
+        if (cancelled) return;
 
-        if (!mounted) return;
-
-        if (error) {
-          setError(error.message);
-          setHasRecoverySession(false);
-          setCheckingSession(false);
-          return;
-        }
-
-        if (!session) {
-          setError(
-            'Recovery session not found. Open the latest reset link from your email again.'
-          );
-          setHasRecoverySession(false);
-          setCheckingSession(false);
-          return;
-        }
-
-        setHasRecoverySession(true);
+        setError(
+          'Recovery session not found. Open the latest reset link from your email again.'
+        );
         setCheckingSession(false);
       } catch {
-        if (!mounted) return;
+        if (cancelled) return;
         setError('Failed to initialize password recovery session.');
-        setHasRecoverySession(false);
         setCheckingSession(false);
       }
     }
@@ -144,7 +121,7 @@ export default function UpdatePasswordPage() {
     initRecoverySession();
 
     return () => {
-      mounted = false;
+      cancelled = true;
 
       if (redirectTimeoutRef.current) {
         clearTimeout(redirectTimeoutRef.current);
@@ -167,7 +144,7 @@ export default function UpdatePasswordPage() {
       return;
     }
 
-    if (!password.trim() || !confirmPassword.trim()) {
+    if (!password || !confirmPassword) {
       setError('Fill in both password fields.');
       return;
     }
@@ -184,7 +161,7 @@ export default function UpdatePasswordPage() {
 
     setLoading(true);
 
-    const { error } = await supabase.auth.updateUser({
+    const { error } = await supabaseRef.current.auth.updateUser({
       password,
     });
 
@@ -199,7 +176,6 @@ export default function UpdatePasswordPage() {
 
     redirectTimeoutRef.current = setTimeout(() => {
       router.replace('/login');
-      router.refresh();
     }, 1200);
   }
 
