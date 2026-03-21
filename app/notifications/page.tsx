@@ -117,12 +117,6 @@ export default function NotificationsPage() {
 
       const json = await res.json().catch(() => null)
 
-      console.log('[notifications/page] markAllAsRead response', {
-        status: res.status,
-        ok: res.ok,
-        json,
-      })
-
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || 'Failed to mark all as read')
       }
@@ -168,13 +162,6 @@ export default function NotificationsPage() {
 
       const json = await res.json().catch(() => null)
 
-      console.log('[notifications/page] markOneAsRead response', {
-        id,
-        status: res.status,
-        ok: res.ok,
-        json,
-      })
-
       if (!res.ok || !json?.ok) {
         throw new Error(json?.error || 'Failed to mark notification as read')
       }
@@ -219,9 +206,9 @@ export default function NotificationsPage() {
 
       try {
         const {
-          data: { session },
+          data: { user },
           error: authError,
-        } = await supabaseRef.current.auth.getSession()
+        } = await supabaseRef.current.auth.getUser()
 
         if (!active) return
 
@@ -230,8 +217,6 @@ export default function NotificationsPage() {
           setLoading(false)
           return
         }
-
-        const user = session?.user ?? null
 
         if (!user) {
           setLoading(false)
@@ -323,14 +308,16 @@ export default function NotificationsPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={markAllAsRead}
-            disabled={loading || markingAll || unreadCount === 0}
-            className="rounded-xl border border-sky-400/20 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {markingAll ? 'Marking...' : 'Mark all as read'}
-          </button>
+          {unreadCount > 0 && (
+            <button
+              type="button"
+              onClick={markAllAsRead}
+              disabled={loading || markingAll}
+              className="rounded-xl border border-sky-400/20 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {markingAll ? 'Marking...' : 'Mark all as read'}
+            </button>
+          )}
 
           <button
             type="button"
@@ -358,7 +345,7 @@ export default function NotificationsPage() {
 
       {!loading && errorText && (
         <div className="rounded-2xl border border-red-400/30 bg-red-500/10 p-4 text-red-200">
-          Failed to load notifications: {errorText}
+          {errorText}
         </div>
       )}
 
