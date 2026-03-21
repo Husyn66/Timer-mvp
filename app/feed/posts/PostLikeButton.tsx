@@ -1,8 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { fetchWithRetry } from '@/lib/fetchWithRetry'
 
 export default function PostLikeButton({
   postId,
@@ -19,13 +18,12 @@ export default function PostLikeButton({
   initialCount: number
   onToggle: (postId: string, nextLiked: boolean) => void
 }) {
-  const supabase = useMemo(() => createClient(), [])
+  const supabaseRef = useRef(createClient())
+  const mountedRef = useRef(true)
 
   const [liked, setLiked] = useState(initialLiked)
   const [count, setCount] = useState(initialCount)
   const [loading, setLoading] = useState(false)
-
-  const mountedRef = useRef(true)
 
   useEffect(() => {
     mountedRef.current = true
@@ -39,108 +37,65 @@ export default function PostLikeButton({
     setCount(initialCount)
   }, [initialLiked, initialCount])
 
-  const shouldRetryLikeError = (error: unknown) => {
-    const message =
-      error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
-
-    return (
-      message.includes('failed to fetch') ||
-      message.includes('network') ||
-      message.includes('timeout') ||
-      message.includes('temporar') ||
-      message.includes('fetch')
-    )
-  }
-
   const toggle = async () => {
     if (!currentUserId || loading) return
 
+    const supabase = supabaseRef.current
     const prevLiked = liked
     const prevCount = count
-
     const nextLiked = !prevLiked
     const nextCount = nextLiked ? prevCount + 1 : Math.max(prevCount - 1, 0)
 
     setLoading(true)
-
-    // optimistic UI
     setLiked(nextLiked)
     setCount(nextCount)
     onToggle(postId, nextLiked)
 
     try {
       if (prevLiked) {
-        await fetchWithRetry(
-          async () => {
-            const { error } = await supabase
-              .from('post_likes')
-              .delete()
-              .eq('post_id', postId)
-              .eq('user_id', currentUserId)
+        const { error } = await supabase
+          .from('post_likes')
+          .delete()
+          .eq('post_id', postId)
+          .eq('user_id', currentUserId)
 
-            if (error) {
-              throw new Error(`Failed to remove like: ${error.message}`)
-            }
-          },
-          {
-            retries: 1,
-            delayMs: 700,
-            shouldRetry: shouldRetryLikeError,
-          }
-        )
+        if (error) {
+          throw new Error(`Failed to remove like: ${error.message}`)
+        }
       } else {
-        await fetchWithRetry(
-          async () => {
-            const { error } = await supabase
-              .from('post_likes')
-              .insert({
-                post_id: postId,
-                user_id: currentUserId,
-              })
+        const { error } = await supabase.from('post_likes').insert({
+          post_id: postId,
+          user_id: currentUserId,
+        })
 
-            if (error) {
-              throw new Error(`Failed to add like: ${error.message}`)
-            }
-          },
-          {
-            retries: 1,
-            delayMs: 700,
-            shouldRetry: shouldRetryLikeError,
+        if (error) {
+          const message = error.message.toLowerCase()
+          const isDuplicate =
+            error.code === '23505' ||
+            message.includes('duplicate key') ||
+            message.includes('already exists')
+
+          if (!isDuplicate) {
+            throw new Error(`Failed to add like: ${error.message}`)
           }
-        )
+        }
 
         if (currentUserId !== postOwnerId) {
-          try {
-            await fetchWithRetry(
-              async () => {
-                const { error } = await supabase
-                  .from('notifications')
-                  .insert({
-                    user_id: postOwnerId,
-                    actor_id: currentUserId,
-                    type: 'like',
-                    post_id: postId,
-                  })
+          const { error: notificationError } = await supabase.from('notifications').insert({
+            user_id: postOwnerId,
+            actor_id: currentUserId,
+            type: 'like',
+            post_id: postId,
+          })
 
-                if (error) {
-                  throw new Error(`Like notification failed: ${error.message}`)
-                }
-              },
-              {
-                retries: 1,
-                delayMs: 700,
-                shouldRetry: shouldRetryLikeError,
-              }
-            )
-          } catch (notificationErr) {
-            console.error('Like notification failed:', notificationErr)
+          if (notificationError) {
+            console.error('Like notification failed:', notificationError)
           }
         }
       }
     } catch (err) {
       console.error('Like toggle failed:', err)
 
-      // rollback
       if (!mountedRef.current) return
 
       setLiked(prevLiked)
