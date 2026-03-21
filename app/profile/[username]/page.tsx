@@ -19,6 +19,7 @@ type ProfilePost = {
 type ProfileIdentityRow = {
   id: string
   username: string | null
+  xp_total: number | null
 }
 
 const btnStyle: CSSProperties = {
@@ -61,6 +62,14 @@ const deleteBtnStyle: CSSProperties = {
   fontWeight: 700,
 }
 
+function getLevelFromXp(xp: number): number {
+  return Math.floor(xp / 100) + 1
+}
+
+function getXpIntoCurrentLevel(xp: number): number {
+  return xp % 100
+}
+
 export default function ProfilePage() {
   const params = useParams<{ username?: string | string[] }>()
   const router = useRouter()
@@ -81,11 +90,14 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true)
   const [followLoading, setFollowLoading] = useState(false)
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null)
-  const [error, setError] = useState('')
-  const [profileExists, setProfileExists] = useState(true)
 
+  const [loadError, setLoadError] = useState('')
+  const [actionError, setActionError] = useState('')
+
+  const [profileExists, setProfileExists] = useState(true)
   const [profileUserId, setProfileUserId] = useState<string | null>(null)
   const [profileUsername, setProfileUsername] = useState<string>('')
+  const [profileXp, setProfileXp] = useState<number>(0)
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
 
   const [followersCount, setFollowersCount] = useState(0)
@@ -97,48 +109,49 @@ export default function ProfilePage() {
 
     async function loadProfile() {
       if (!username) {
-        setError('Missing username in route. Open profile by /profile/<username>.')
+        setLoadError('Missing username in route. Open profile by /profile/<username>.')
         setLoading(false)
         return
       }
 
       setLoading(true)
-      setError('')
+      setLoadError('')
+      setActionError('')
       setProfileExists(true)
       setPosts([])
       setProfileUserId(null)
       setProfileUsername('')
+      setProfileXp(0)
       setFollowersCount(0)
       setFollowingCount(0)
       setIsFollowing(false)
 
       try {
         const {
-          data: { session },
+          data: { user },
           error: authError,
-        } = await supabaseRef.current.auth.getSession()
+        } = await supabaseRef.current.auth.getUser()
 
         if (!active) return
 
         if (authError) {
-          setError(authError.message)
+          setLoadError(authError.message)
           setLoading(false)
           return
         }
 
-        const user = session?.user ?? null
         setCurrentUserId(user?.id ?? null)
 
         const { data: profileRow, error: profileError } = await supabaseRef.current
           .from('profiles')
-          .select('id, username')
+          .select('id, username, xp_total')
           .eq('username', username)
           .maybeSingle()
 
         if (!active) return
 
         if (profileError) {
-          setError(profileError.message)
+          setLoadError(profileError.message)
           setLoading(false)
           return
         }
@@ -155,6 +168,7 @@ export default function ProfilePage() {
         setProfileExists(true)
         setProfileUserId(targetUserId)
         setProfileUsername(typedProfile.username?.trim() || username)
+        setProfileXp(Math.max(0, typedProfile.xp_total ?? 0))
 
         const [
           { data: postRows, error: postsError },
@@ -181,19 +195,19 @@ export default function ProfilePage() {
         if (!active) return
 
         if (postsError) {
-          setError(postsError.message)
+          setLoadError(postsError.message)
           setLoading(false)
           return
         }
 
         if (followersError) {
-          setError(followersError.message)
+          setLoadError(followersError.message)
           setLoading(false)
           return
         }
 
         if (followingError) {
-          setError(followingError.message)
+          setLoadError(followingError.message)
           setLoading(false)
           return
         }
@@ -213,7 +227,7 @@ export default function ProfilePage() {
           if (!active) return
 
           if (followError) {
-            setError(followError.message)
+            setLoadError(followError.message)
             setLoading(false)
             return
           }
@@ -226,7 +240,7 @@ export default function ProfilePage() {
         setLoading(false)
       } catch (e: unknown) {
         if (!active) return
-        setError(e instanceof Error ? e.message : 'Failed to load profile')
+        setLoadError(e instanceof Error ? e.message : 'Failed to load profile')
         setLoading(false)
       }
     }
@@ -244,7 +258,7 @@ export default function ProfilePage() {
 
     followInProgressRef.current = true
     setFollowLoading(true)
-    setError('')
+    setActionError('')
 
     try {
       if (isFollowing) {
@@ -255,7 +269,7 @@ export default function ProfilePage() {
           .eq('following_id', profileUserId)
 
         if (error) {
-          setError(error.message)
+          setActionError(error.message)
           return
         }
 
@@ -270,7 +284,7 @@ export default function ProfilePage() {
       })
 
       if (error) {
-        setError(error.message)
+        setActionError(error.message)
         return
       }
 
@@ -289,7 +303,7 @@ export default function ProfilePage() {
     if (!confirmed) return
 
     setDeletingPostId(postId)
-    setError('')
+    setActionError('')
 
     const { error } = await supabaseRef.current
       .from('posts')
@@ -298,7 +312,7 @@ export default function ProfilePage() {
       .eq('user_id', currentUserId)
 
     if (error) {
-      setError(`Failed to delete post: ${error.message}`)
+      setActionError(`Failed to delete post: ${error.message}`)
       setDeletingPostId(null)
       return
     }
@@ -314,6 +328,12 @@ export default function ProfilePage() {
     !!currentUserId && !!profileUserId && currentUserId === profileUserId
 
   const displayUsername = profileUsername || username || 'unknown'
+
+  const safeXp = Math.max(0, profileXp)
+  const level = getLevelFromXp(safeXp)
+  const currentLevelXp = getXpIntoCurrentLevel(safeXp)
+  const xpNeeded = 100 - currentLevelXp
+  const progressPercent = Math.min((currentLevelXp / 100) * 100, 100)
 
   return (
     <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
@@ -357,33 +377,116 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      {!loading && !error && profileExists && (
+      {!loading && actionError && (
         <div
           style={{
-            display: 'flex',
-            gap: 10,
-            flexWrap: 'wrap',
             marginBottom: 16,
+            padding: 12,
+            border: '1px solid #f59e0b',
+            borderRadius: 8,
+            background: '#fffbeb',
+            color: '#92400e',
           }}
         >
-          <span style={pillStyle}>📝 Posts: {posts.length}</span>
-          <span style={pillStyle}>❤️ Likes: {totalLikes}</span>
-          <span style={pillStyle}>💬 Comments: {totalComments}</span>
-          <span style={pillStyle}>👥 Followers: {followersCount}</span>
-          <span style={pillStyle}>➡️ Following: {followingCount}</span>
+          <p style={{ margin: 0, fontWeight: 700 }}>Action error</p>
+          <p style={{ marginTop: 6, marginBottom: 0 }}>{actionError}</p>
         </div>
+      )}
+
+      {!loading && !loadError && profileExists && (
+        <>
+          <div
+            style={{
+              display: 'flex',
+              gap: 10,
+              flexWrap: 'wrap',
+              marginBottom: 16,
+            }}
+          >
+            <span style={pillStyle}>📝 Posts: {posts.length}</span>
+            <span style={pillStyle}>❤️ Likes: {totalLikes}</span>
+            <span style={pillStyle}>💬 Comments: {totalComments}</span>
+            <span style={pillStyle}>👥 Followers: {followersCount}</span>
+            <span style={pillStyle}>➡️ Following: {followingCount}</span>
+          </div>
+
+          <section
+            style={{
+              marginBottom: 16,
+              padding: 12,
+              border: '1px solid #444',
+              borderRadius: 12,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: 12,
+                flexWrap: 'wrap',
+                marginBottom: 10,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>
+                  Level {level}
+                </div>
+                <div style={{ fontSize: 13, opacity: 0.75 }}>
+                  {safeXp} total XP
+                </div>
+              </div>
+
+              <div style={pillStyle}>{currentLevelXp}/100 XP</div>
+            </div>
+
+            <div
+              style={{
+                height: 10,
+                width: '100%',
+                overflow: 'hidden',
+                borderRadius: 999,
+                background: '#2a2a2a',
+              }}
+            >
+              <div
+                style={{
+                  width: `${progressPercent}%`,
+                  height: '100%',
+                  background: '#f5f5f5',
+                  transition: 'width 0.4s ease',
+                }}
+              />
+            </div>
+
+            <div
+              style={{
+                marginTop: 8,
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 12,
+                flexWrap: 'wrap',
+                fontSize: 12,
+                opacity: 0.8,
+              }}
+            >
+              <span>{Math.round(progressPercent)}% complete</span>
+              <span>{xpNeeded} XP to next level</span>
+            </div>
+          </section>
+        </>
       )}
 
       {loading && <p>Loading profile...</p>}
 
-      {!loading && error && (
+      {!loading && !!loadError && (
         <div style={{ padding: 12, border: '1px solid #f00', borderRadius: 8 }}>
           <p style={{ margin: 0, fontWeight: 700 }}>Error</p>
-          <p style={{ marginTop: 6 }}>{error}</p>
+          <p style={{ marginTop: 6 }}>{loadError}</p>
         </div>
       )}
 
-      {!loading && !error && !profileExists && (
+      {!loading && !loadError && !profileExists && (
         <div style={{ padding: 12, border: '1px solid #444', borderRadius: 8 }}>
           <p style={{ margin: 0, fontWeight: 700 }}>Profile not found</p>
           <p style={{ marginTop: 6 }}>
@@ -392,7 +495,7 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {!loading && !error && profileExists && posts.length === 0 && (
+      {!loading && !loadError && profileExists && posts.length === 0 && (
         <div style={{ padding: 12, border: '1px solid #444', borderRadius: 8 }}>
           <p style={{ margin: 0, fontWeight: 700 }}>No posts yet</p>
           <p style={{ marginTop: 6 }}>
@@ -401,7 +504,7 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {!loading && !error && profileExists && posts.length > 0 && (
+      {!loading && !loadError && profileExists && posts.length > 0 && (
         <div style={{ display: 'grid', gap: 12 }}>
           {posts.map((post) => {
             const isOwnPost = currentUserId === post.user_id
