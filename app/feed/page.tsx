@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
-import { fetchWithRetry } from '@/lib/supabase/fetchWithRetry'
+import { fetchWithRetry } from '@/lib/fetchWithRetry'
 
 import PostLikeButton from './posts/PostLikeButton'
 import PostComments from './posts/PostComments'
+import PostWatchTracker from './posts/PostWatchTracker'
 import RetryBlock from '../components/RetryBlock'
+import XPProgressWrapper from '../components/XPProgressWrapper'
 
 type FeedPost = {
   id: string
@@ -50,6 +52,8 @@ export default function FeedPage() {
   const mountedRef = useRef(true)
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const isFetchingRef = useRef(false)
+  const postsRef = useRef<FeedPost[]>([])
+  const serverOffsetRef = useRef(0)
 
   const btnStyle: CSSProperties = {
     padding: '8px 12px',
@@ -127,9 +131,18 @@ export default function FeedPage() {
       message.includes('failed to fetch') ||
       message.includes('network') ||
       message.includes('timeout') ||
-      message.includes('temporar') ||
+      message.includes('temporary') ||
       message.includes('fetch')
     )
+  }, [])
+
+  const resetFeedState = useCallback(() => {
+    postsRef.current = []
+    serverOffsetRef.current = 0
+    setPosts([])
+    setLikedPostIds(new Set())
+    setHasMore(true)
+    setError('')
   }, [])
 
   const loadCurrentUser = useCallback(async () => {
@@ -142,7 +155,10 @@ export default function FeedPage() {
       return null
     }
 
-    if (mountedRef.current) setCurrentUserId(uid)
+    if (mountedRef.current) {
+      setCurrentUserId(uid)
+    }
+
     return uid
   }, [router, supabase])
 
@@ -209,9 +225,11 @@ export default function FeedPage() {
   )
 
   const loadLikedState = useCallback(
-    async (uid: string, visiblePosts: FeedPost[]) => {
+    async (uid: string, visiblePosts: FeedPost[], mode: 'replace' | 'merge' = 'replace') => {
       if (visiblePosts.length === 0) {
-        if (mountedRef.current) setLikedPostIds(new Set())
+        if (mode === 'replace' && mountedRef.current) {
+          setLikedPostIds(new Set())
+        }
         return
       }
 
@@ -238,9 +256,20 @@ export default function FeedPage() {
         }
       )
 
-      if (mountedRef.current) {
+      if (!mountedRef.current) return
+
+      if (mode === 'replace') {
         setLikedPostIds(likedIds)
+        return
       }
+
+      setLikedPostIds((prev) => {
+        const next = new Set(prev)
+        for (const id of likedIds) {
+          next.add(id)
+        }
+        return next
+      })
     },
     [shouldRetryFeedError, supabase]
   )
@@ -251,7 +280,6 @@ export default function FeedPage() {
 
     setLoading(true)
     setError('')
-    setHasMore(true)
 
     try {
       const uid = await loadCurrentUser()
@@ -261,9 +289,13 @@ export default function FeedPage() {
 
       if (!mountedRef.current) return
 
+      postsRef.current = batch
+      serverOffsetRef.current = batch.length
+
       setPosts(batch)
       setHasMore(batch.length === PAGE_SIZE)
-      await loadLikedState(uid, batch)
+
+      await loadLikedState(uid, batch, 'replace')
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Unknown error'
       if (mountedRef.current) setError(msg)
@@ -283,7 +315,7 @@ export default function FeedPage() {
     setError('')
 
     try {
-      const from = posts.length
+      const from = serverOffsetRef.current
       const to = from + PAGE_SIZE - 1
 
       const batch = await fetchFeedBatch(currentUserId, from, to)
@@ -295,22 +327,18 @@ export default function FeedPage() {
         return
       }
 
-      let mergedPosts: FeedPost[] = []
+      const currentPosts = postsRef.current
+      const seen = new Set(currentPosts.map((p) => p.id))
+      const uniqueNewPosts = batch.filter((item) => !seen.has(item.id))
+      const merged = [...currentPosts, ...uniqueNewPosts]
 
-      setPosts((prev) => {
-        const seen = new Set(prev.map((p) => p.id))
-        const merged = [...prev]
+      postsRef.current = merged
+      serverOffsetRef.current = from + batch.length
 
-        for (const item of batch) {
-          if (!seen.has(item.id)) merged.push(item)
-        }
+      setPosts(merged)
 
-        mergedPosts = merged
-        return merged
-      })
-
-      if (mergedPosts.length > 0) {
-        await loadLikedState(currentUserId, mergedPosts)
+      if (uniqueNewPosts.length > 0) {
+        await loadLikedState(currentUserId, uniqueNewPosts, 'merge')
       }
 
       if (batch.length < PAGE_SIZE) {
@@ -323,20 +351,18 @@ export default function FeedPage() {
       if (mountedRef.current) setLoadingMore(false)
       isFetchingRef.current = false
     }
-  }, [currentUserId, fetchFeedBatch, hasMore, loadLikedState, posts.length])
+  }, [currentUserId, fetchFeedBatch, hasMore, loadLikedState])
 
   const handleReload = useCallback(async () => {
     try {
       setRetrying(true)
-      setPosts([])
-      setLikedPostIds(new Set())
-      setHasMore(true)
-      setError('')
+      isFetchingRef.current = false
+      resetFeedState()
       await loadInitial()
     } finally {
       setRetrying(false)
     }
-  }, [loadInitial])
+  }, [loadInitial, resetFeedState])
 
   const applyLikeDelta = useCallback((postId: string, nextLiked: boolean) => {
     setPosts((prev) =>
@@ -352,6 +378,18 @@ export default function FeedPage() {
         }
       })
     )
+
+    postsRef.current = postsRef.current.map((post) => {
+      if (post.id !== postId) return post
+
+      const current = post.like_count ?? 0
+      const nextCount = nextLiked ? current + 1 : Math.max(current - 1, 0)
+
+      return {
+        ...post,
+        like_count: nextCount,
+      }
+    })
 
     setLikedPostIds((prev) => {
       const next = new Set(prev)
@@ -373,6 +411,16 @@ export default function FeedPage() {
         }
       })
     )
+
+    postsRef.current = postsRef.current.map((post) => {
+      if (post.id !== postId) return post
+
+      const current = post.comment_count ?? 0
+      return {
+        ...post,
+        comment_count: Math.max(current + delta, 0),
+      }
+    })
   }, [])
 
   const handleDeletePost = useCallback(
@@ -405,7 +453,10 @@ export default function FeedPage() {
           }
         )
 
-        setPosts((prev) => prev.filter((post) => post.id !== postId))
+        const nextPosts = postsRef.current.filter((post) => post.id !== postId)
+        postsRef.current = nextPosts
+        setPosts(nextPosts)
+
         setLikedPostIds((prev) => {
           const next = new Set(prev)
           next.delete(postId)
@@ -446,12 +497,9 @@ export default function FeedPage() {
   useEffect(() => {
     if (!modeReady) return
 
-    setPosts([])
-    setLikedPostIds(new Set())
-    setHasMore(true)
-    setError('')
+    resetFeedState()
     void loadInitial()
-  }, [feedMode, modeReady, loadInitial])
+  }, [feedMode, modeReady, loadInitial, resetFeedState])
 
   useEffect(() => {
     if (!sentinelRef.current) return
@@ -485,13 +533,14 @@ export default function FeedPage() {
 
     return (
       <article
-        key={post.id}
         style={{
           border: '1px solid #444',
           borderRadius: 12,
           padding: 12,
         }}
       >
+        <PostWatchTracker postId={post.id} enabled={!!currentUserId} />
+
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -531,11 +580,7 @@ export default function FeedPage() {
           </div>
         </div>
 
-        {post.content && (
-          <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>
-            {post.content}
-          </div>
-        )}
+        {post.content && <div style={{ marginTop: 10, whiteSpace: 'pre-wrap' }}>{post.content}</div>}
 
         {post.image_url && <img src={post.image_url} alt="Post image" style={imageStyle} />}
 
@@ -595,6 +640,8 @@ export default function FeedPage() {
         </div>
       </div>
 
+      {currentUserId && <XPProgressWrapper userId={currentUserId} />}
+
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
         <button
           onClick={() => setFeedMode('for_you')}
@@ -633,11 +680,7 @@ export default function FeedPage() {
       )}
 
       {!loading && !error && posts.length === 0 && (
-        <p>
-          {feedMode === 'following'
-            ? 'No posts from followed users yet.'
-            : 'No posts yet.'}
-        </p>
+        <p>{feedMode === 'following' ? 'No posts from followed users yet.' : 'No posts yet.'}</p>
       )}
 
       {!loading && !error && posts.length > 0 && (
